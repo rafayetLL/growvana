@@ -21,7 +21,7 @@
 // ab_test_plan, warnings) do NOT come over this stream — they arrive
 // via the webhook relay. Subscribe with `subscribeProgress(thread_id)`.
 
-const API_BASE = '/api/v1';
+const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 export async function* streamEmailAgent({ thread_id, user_message, webhook_request, signal }) {
   const body = { email_request: { thread_id, user_message } };

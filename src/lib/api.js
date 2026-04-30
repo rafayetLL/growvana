@@ -1,7 +1,9 @@
-// Thin client over Growvana's /api/v1 endpoints.
-// All requests are relative — Vite proxy forwards /api to http://127.0.0.1:8000.
+// Thin client over Growvana's backend HTTP endpoints. The full base URL
+// (including `/api/v1`) comes from `VITE_API_BASE_URL` in .env — no
+// Vite proxy, no relative-path fallback. The browser hits the backend
+// directly; CORS on the backend handles the cross-origin call.
 
-const API_BASE = '/api/v1';
+const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 /**
  * POST /api/v1/chat/init
