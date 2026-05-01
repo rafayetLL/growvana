@@ -8,18 +8,22 @@
 //       Fired ONCE the moment the LLM's output reveals the kind. Lets
 //       the UI show a 'Drafting…' indicator before any structured
 //       webhook lands. Mirrors the chat stream's `milestone_drafting`.
-//   - { type: 'email_body_token', content, step_number? }
-//       Tokens for an email body. `step_number` is omitted (or 0) for a
-//       single email; present (1-indexed) for sequence steps.
+//   - { type: 'email_body_html_token', content, step_number? }
+//       Tokens for the styled HTML body fragment (with [[PREHEADER]],
+//       [[CTA_N_LABEL]], [[CTA_N_HREF]] placeholders intact). `step_number`
+//       is omitted (or 0) for a single email; present (1-indexed) for
+//       sequence steps.
 //   - { type: 'done', thread_id, ai_message, generated_kind }
 //       generated_kind is 'single' | 'sequence' | null (conversational turn).
-//   - { type: 'error', message }
-//       Includes the blueprint-missing message when the backend can't
-//       find a blueprint for this thread.
+//   - { type: 'error', status, code, message }
+//       Structured error frame (Timeout Error / GrowvanaException class /
+//       Unknown Error). Includes the blueprint-missing message when the
+//       backend can't find a blueprint for this thread.
 //
-// Structured email blocks (metadata, subject_lines, ctas, segmentation,
-// ab_test_plan, warnings) do NOT come over this stream — they arrive
-// via the webhook relay. Subscribe with `subscribeProgress(thread_id)`.
+// Structured email blocks (metadata, subject_lines, ctas (list-of-list),
+// cta_ab_tests (slot-aligned), segmentation_strategy, warnings) do NOT
+// come over this stream — they arrive via the webhook relay. Subscribe
+// with `subscribeProgress(thread_id)`.
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
