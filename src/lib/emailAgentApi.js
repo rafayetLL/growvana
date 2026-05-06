@@ -9,21 +9,42 @@
 //       the UI show a 'Drafting…' indicator before any structured
 //       webhook lands. Mirrors the chat stream's `milestone_drafting`.
 //   - { type: 'email_body_html_token', content, step_number? }
-//       Tokens for the styled HTML body fragment (with [[PREHEADER]],
-//       [[CTA_N_LABEL]], [[CTA_N_HREF]] placeholders intact). `step_number`
-//       is omitted (or 0) for a single email; present (1-indexed) for
-//       sequence steps.
-//   - { type: 'done', thread_id, ai_message, generated_kind }
-//       generated_kind is 'single' | 'sequence' | null (conversational turn).
+//       Tokens for the styled HTML body fragment (with
+//       `{{CTA_<NAME>_LABEL}}`, `{{CTA_<NAME>_HREF}}`, `{{IMAGE_<NAME>}}`,
+//       and any other UPPERCASE `{{TOKEN}}` placeholders intact). The
+//       inbox preview text is NOT a body_html placeholder — it lives on
+//       the chosen subject variant's `preview_text` and is rendered
+//       separately in the UI. `step_number` is omitted (or 0) for a
+//       single email; present (1-indexed) for sequence steps.
+//   - { type: 'done', thread_id, email_plan, generated_kind,
+//                     single, sequence, segmentation_strategy, warnings,
+//                     generated_images }
+//       The chat reply is NOT on this frame — the frontend assembles it
+//       live from the `ai_message_token` stream emitted during the
+//       orchestrator's pass.
+//       `generated_kind` is 'single' | 'sequence' | null (conversational).
+//       `single` / `sequence` carry the full SingleEmail / Sequence payload
+//       — including `body_html` (with `{{TOKEN}}` placeholders LITERAL),
+//       `placeholders` (regex-extracted token list), `ctas` (list of
+//       CtaSlot {name, label_token, href_token, variants} — backend ships
+//       the FULL braced label/href tokens so the frontend never has to
+//       concatenate `CTA_<NAME>_<suffix>`), `cta_ab_tests` (CtaAbTest
+//       entries keyed by slot_name).
+//       `generated_images` is a `{ "{{IMAGE_<NAME>}}": data_uri }` map
+//       written by the `generate_email_images` tool — keyed by the FULL
+//       braced placeholder string, so the frontend substitutes via direct
+//       `replaceAll(token, dataUri)` with no name-prefix surgery.
+//       Backend never substitutes them.
 //   - { type: 'error', status, code, message }
 //       Structured error frame (Timeout Error / GrowvanaException class /
 //       Unknown Error). Includes the blueprint-missing message when the
 //       backend can't find a blueprint for this thread.
 //
-// Structured email blocks (metadata, subject_lines, ctas (list-of-list),
-// cta_ab_tests (slot-aligned), segmentation_strategy, warnings) do NOT
-// come over this stream — they arrive via the webhook relay. Subscribe
-// with `subscribeProgress(thread_id)`.
+// Structured email blocks (metadata, subject_lines, body, ctas, cta_ab_tests,
+// subject_line_ab_test, segmentation_strategy, warnings, sequence_metadata,
+// step_metadata) AND the slim `email.images` event (count + slot names
+// only — no URIs) do NOT come over this stream — they arrive via the
+// webhook relay. Subscribe with `subscribeProgress(thread_id)`.
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 

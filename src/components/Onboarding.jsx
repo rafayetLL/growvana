@@ -67,7 +67,7 @@ function ProgressStep({ label, done, message }) {
   );
 }
 
-export default function Onboarding({ onContinue, onSkip, loading, error, progress = {} }) {
+export default function Onboarding({ onContinue, onSkip, onOpenSdk, loading, error, progress = {} }) {
   const [companyUrl, setCompanyUrl] = useState('');
   const [fileUrls, setFileUrls] = useState(['']);
   // Captured at submit so the progress stepper shows the right steps even
@@ -113,6 +113,15 @@ export default function Onboarding({ onContinue, onSkip, loading, error, progres
         <Logo />
         <div className="flex items-center gap-3">
           <div className="text-[13px] text-ink-500 dark:text-slate-400">Setup: Knowledge Base</div>
+          {onOpenSdk && (
+            <button
+              type="button"
+              onClick={onOpenSdk}
+              className="text-[12px] px-3 py-1.5 rounded-md border border-ink-200 dark:border-slate-700 text-ink-600 dark:text-slate-300 hover:bg-ink-50 dark:hover:bg-slate-800 transition"
+            >
+              Email Agent (SDK) →
+            </button>
+          )}
           <button
             type="button"
             onClick={toggleTheme}

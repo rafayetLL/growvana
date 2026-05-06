@@ -18,28 +18,39 @@ import {
 // since it applies to the whole generation regardless of kind — same as
 // `warnings`. It's tracked at the screen level via `liveSegmentationStrategy`
 // and is a single string, not a list.
+//
+// `ctas` is a list of `CtaSlot` — `{ name, variants: [Cta, ...] }`. Slots
+// match body_html tokens by NAME via `{{CTA_<NAME>_LABEL}}` /
+// `{{CTA_<NAME>_HREF}}`. `cta_ab_tests` is a list of `CtaAbTest` keyed by
+// `slot_name` (no None-padding by slot index). `placeholders` is the
+// regex-extracted distinct `{{TOKEN}}` list the design node attaches to
+// the body_html.
 function emptySingleEmail() {
   return {
     metadata: null,
     subject_lines: [],
+    body: '',
     body_html: '',
-    ctas: [],            // list-of-list: outer = slot, inner = variants
+    placeholders: [],
+    ctas: [],            // list of CtaSlot { name, variants }
     subject_line_ab_test: null,
-    cta_ab_tests: [],    // slot-aligned: one (CtaAbTest | null) per slot
+    cta_ab_tests: [],    // list of CtaAbTest { slot_name, hypothesis, success_metric }
   };
 }
 function emptySequence() {
   return {
     metadata: null,
-    steps: {}, // { step_number: { step_metadata, subject_lines, ctas (list-of-list), body_html, subject_line_ab_test, cta_ab_tests (slot-aligned list) } }
+    steps: {}, // { step_number: emptySequenceStep() }
   };
 }
 function emptySequenceStep() {
   return {
     step_metadata: null,
     subject_lines: [],
-    ctas: [],
+    body: '',
     body_html: '',
+    placeholders: [],
+    ctas: [],
     subject_line_ab_test: null,
     cta_ab_tests: [],
   };
@@ -91,6 +102,13 @@ export default function EmailAgentScreen({
   const [liveSequence, setLiveSequence] = useState(null);
   const [liveSegmentationStrategy, setLiveSegmentationStrategy] = useState('');
   const [liveWarnings, setLiveWarnings] = useState([]);
+  // `placeholder → data_uri` map written by the `generate_email_images`
+  // tool and surfaced via the SSE `done` frame's `generated_images`
+  // field. Keys are full literal `{{IMAGE_<NAME>}}` tokens (the LLM
+  // commits to the same braced string in the tool call AND in body_html);
+  // we substitute by direct `replaceAll` at render time — backend never
+  // substitutes, frontend never concatenates.
+  const [liveGeneratedImages, setLiveGeneratedImages] = useState({});
 
   // Right-rail "Latest Generation" — committed snapshot of the most recent
   // generation in this session. Refreshed every time `done` lands with a
@@ -112,6 +130,7 @@ export default function EmailAgentScreen({
   const liveSequenceRef = useRef(null);
   const liveSegmentationStrategyRef = useRef('');
   const liveWarningsRef = useRef([]);
+  const liveGeneratedImagesRef = useRef({});
 
   useEffect(() => {
     if (!scrollRef.current) return;
@@ -143,6 +162,11 @@ export default function EmailAgentScreen({
       typeof next === 'function' ? next(liveWarningsRef.current) : next;
     setLiveWarnings(next);
   }
+  function setLiveGeneratedImagesBoth(next) {
+    liveGeneratedImagesRef.current =
+      typeof next === 'function' ? next(liveGeneratedImagesRef.current) : next;
+    setLiveGeneratedImages(next);
+  }
 
   function resetLive() {
     liveKindRef.current = null;
@@ -150,11 +174,13 @@ export default function EmailAgentScreen({
     liveSequenceRef.current = null;
     liveSegmentationStrategyRef.current = '';
     liveWarningsRef.current = [];
+    liveGeneratedImagesRef.current = {};
     setLiveKind(null);
     setLiveSingle(null);
     setLiveSequence(null);
     setLiveSegmentationStrategy('');
     setLiveWarnings([]);
+    setLiveGeneratedImages({});
   }
 
   function applyWebhookEvent(evt) {
@@ -177,6 +203,17 @@ export default function EmailAgentScreen({
     }
     if (stage === 'email.warnings') {
       setLiveWarningsBoth(data.warnings || []);
+      return;
+    }
+
+    // `email.images` is a slim notification — the backend tool fires it
+    // with `image_count` and `slots` ONLY (never the data URIs, which
+    // are huge). We don't need to mutate any live state here; the
+    // actual `slot → data_uri` map arrives via the SSE `done` frame's
+    // `generated_images` field. This branch is a no-op intentionally,
+    // but it stops the event from accidentally falling through into
+    // the per-step / single-email element matchers below.
+    if (stage === 'email.images') {
       return;
     }
 
@@ -283,15 +320,13 @@ export default function EmailAgentScreen({
             });
           }
         } else if (evt.type === 'done') {
+          // Chat reply is fully assembled from the `ai_message_token`
+          // stream emitted live during the orchestrator's pass — the
+          // backend no longer echoes it on the done frame.
           if (assistantText) {
             setMessages((prev) => [
               ...prev,
               { role: 'assistant', content: assistantText, time: Date.now() },
-            ]);
-          } else if (evt.ai_message) {
-            setMessages((prev) => [
-              ...prev,
-              { role: 'assistant', content: evt.ai_message, time: Date.now() },
             ]);
           }
           if (evt.generated_kind) {
@@ -308,6 +343,15 @@ export default function EmailAgentScreen({
             const committedSegmentationStrategy =
               evt.segmentation_strategy ?? liveSegmentationStrategyRef.current ?? '';
             const committedWarnings = evt.warnings || liveWarningsRef.current || [];
+            // `generated_images` is the `placeholder → data_uri` map
+            // written by the `generate_email_images` tool — keyed by full
+            // literal `{{IMAGE_<NAME>}}` tokens. Empty `{}` on turns that
+            // didn't generate any raster images. The frontend uses it to
+            // substitute body_html placeholders at render time via direct
+            // `replaceAll(token, dataUri)` — no regex build, no
+            // concatenation.
+            const committedGeneratedImages =
+              evt.generated_images || liveGeneratedImagesRef.current || {};
             const time = Date.now();
             setMessages((prev) => [
               ...prev,
@@ -318,6 +362,7 @@ export default function EmailAgentScreen({
                 sequence: committedSequence,
                 segmentation_strategy: committedSegmentationStrategy,
                 warnings: committedWarnings,
+                generated_images: committedGeneratedImages,
                 time,
               },
             ]);
@@ -327,6 +372,7 @@ export default function EmailAgentScreen({
               sequence: committedSequence,
               segmentation_strategy: committedSegmentationStrategy,
               warnings: committedWarnings,
+              generated_images: committedGeneratedImages,
               time,
             });
             // Now that the snapshot is committed to chat history, clear
@@ -423,6 +469,7 @@ export default function EmailAgentScreen({
                       sequence={m.sequence}
                       segmentationStrategy={m.segmentation_strategy || ''}
                       warnings={m.warnings || []}
+                      generatedImages={m.generated_images || {}}
                     />
                   );
                 }
@@ -451,6 +498,7 @@ export default function EmailAgentScreen({
                   sequence={liveSequence}
                   segmentationStrategy={liveSegmentationStrategy}
                   warnings={liveWarnings}
+                  generatedImages={liveGeneratedImages}
                   streaming
                 />
               ) : null}
@@ -709,11 +757,15 @@ function SubjectLines({ variants }) {
   );
 }
 
-// `ctas` is a list-of-list: outer index = slot (1-based slot N matches the
-// [[CTA_N_*]] tokens in body_html), inner list = variants competing in that
-// slot's A/B test (or a single-element list for slots not under test). Each
-// variant has { text, placement, style, href }; `href` is null at generation
-// time and filled in post-generation by the user.
+// `ctas` is a list of CtaSlot — `{ name, variants: [Cta, ...] }`. Each
+// slot's `name` (SCREAMING_SNAKE_CASE: `HERO`, `FOOTER`, `OFFER_CARD`,
+// …) matches the `{{CTA_<NAME>_LABEL}}` / `{{CTA_<NAME>_HREF}}` tokens
+// in body_html. `variants` lists CTAs competing in this slot's A/B
+// test (or a single-element list for slots not under test). Each
+// backend variant carries `{ text, placement, style }`; the frontend
+// synthesizes a per-variant `href` from `ctaHrefs` (user input keyed
+// by `${slot.name}:${variantIdx}`) and merges it onto the variant in
+// `effectiveCtas` before passing the list down here.
 function CtaList({ ctas }) {
   if (!ctas || ctas.length === 0) return null;
   const slotCount = ctas.length;
@@ -721,17 +773,18 @@ function CtaList({ ctas }) {
     <div>
       <SectionTitle>CTAs ({slotCount} {slotCount === 1 ? 'slot' : 'slots'})</SectionTitle>
       <div className="flex flex-col gap-3">
-        {ctas.map((slot, slotIdx) => {
-          const variants = Array.isArray(slot) ? slot : [];
+        {ctas.map((slot) => {
+          if (!slot || typeof slot.name !== 'string') return null;
+          const variants = Array.isArray(slot.variants) ? slot.variants : [];
           if (variants.length === 0) return null;
-          const placement = variants[0]?.placement || `Slot ${slotIdx + 1}`;
+          const placement = variants[0]?.placement || slot.name;
           return (
             <div
-              key={slotIdx}
+              key={slot.name}
               className="rounded-md border border-ink-200 dark:border-slate-700 px-3 py-2"
             >
               <div className="flex items-center gap-2 text-[10.5px] uppercase tracking-wider text-ink-400 dark:text-slate-500">
-                <span>Slot {slotIdx + 1}</span>
+                <span className="font-semibold text-ink-700 dark:text-slate-300">{slot.name}</span>
                 <span className="text-ink-300 dark:text-slate-600">·</span>
                 <span>{placement}</span>
                 {variants.length > 1 && (
@@ -776,21 +829,23 @@ function CtaList({ ctas }) {
   );
 }
 
-// Render one CTA A/B test descriptor per slot under test. `tests` is a
-// slot-aligned list (length = number of CTA slots), with null entries for
-// slots that aren't being tested. Renders nothing if every slot is null.
+// Render one CTA A/B test descriptor per entry. `tests` is a list of
+// `CtaAbTest` keyed by `slot_name` (only slots actually under test
+// have entries — no None-padding by slot index). Each test has
+// `{ slot_name, hypothesis, success_metric }`. Renders nothing when
+// the list is empty.
 function CtaAbTestsBlock({ tests }) {
   if (!Array.isArray(tests) || tests.length === 0) return null;
-  const populated = tests
-    .map((t, i) => ({ test: t, slot: i + 1 }))
-    .filter((entry) => entry.test);
-  if (populated.length === 0) return null;
   return (
     <>
-      {populated.map(({ test, slot }) => (
+      {tests.map((test, i) => (
         <AbTestBlock
-          key={slot}
-          title={populated.length > 1 ? `CTA A/B Test — Slot ${slot}` : 'CTA A/B Test'}
+          key={test?.slot_name || i}
+          title={
+            tests.length > 1
+              ? `CTA A/B Test — ${test?.slot_name || `Slot ${i + 1}`}`
+              : 'CTA A/B Test'
+          }
           test={test}
         />
       ))}
@@ -872,73 +927,132 @@ function escapeHtmlAttr(value) {
     .replace(/>/g, '&gt;');
 }
 
-// Pretty-print Liquid merge tags in the preview only — the source
-// body_html is left untouched so real merge tags ride through to the
-// eventual ESP at send time. `{{unsubscribe_url}}` becomes
-// `[unsubscribe url]` in muted gray.
-function prettyLiquidPlaceholders(html) {
-  return html.replace(/\{\{\s*([a-zA-Z0-9_.\-]+)\s*\}\}/g, (_, name) => {
-    const label = String(name).replace(/[_\-]+/g, ' ').toLowerCase();
-    return `<span style="color:#9CA3AF;">[${label}]</span>`;
-  });
-}
-
-// Walk the body_html and return every `[[NAME]]` token that ISN'T part
-// of the well-known per-email vocabulary (`PREHEADER`, `CTA_N_LABEL`,
-// `CTA_N_HREF`). These remaining tokens are "system tokens" — typically
-// footer / boilerplate slots whose values are only known at send time
-// (`UNSUBSCRIBE_URL`, `VIEW_IN_BROWSER_URL`, `COMPANY_ADDRESS`, etc.).
-// The catalog is open: the LLM picks descriptive SCREAMING_SNAKE_CASE
-// names per email; we discover them from the rendered HTML and surface
-// them as editable inputs in the UI.
-function detectSystemTokens(html) {
+// Walk the body_html and return every UPPERCASE `{{NAME}}` token whose
+// FULL braced form ISN'T already covered by the structured backend data
+// (CTA `slot.label_token` / `slot.href_token`, image `generatedImages`
+// keys). These remaining tokens are "system tokens" — every other
+// UPPERCASE placeholder the user fills in the UI before send
+// (`UNSUBSCRIBE_URL`, `COMPANY_ADDRESS`, `FIRST_NAME`, `ORDER_ID`,
+// etc.). The catalog is open: the LLM picks descriptive
+// SCREAMING_SNAKE_CASE names per email; we discover them from the
+// rendered HTML and surface them as editable inputs.
+//
+// All placeholders are UPPERCASE — there is no Liquid lowercase escape
+// hatch. Lowercase `{{...}}` tokens are not part of the contract and
+// will not be detected here.
+//
+// Classification is set-membership, not regex pattern matching: we ask
+// the backend's structured data "is this exact token yours?" rather
+// than guessing from the token's name shape. Side benefit: orphan
+// tokens (e.g. `{{CTA_GHOST_LABEL}}` written into body_html with no
+// matching `<slot><name>GHOST</name>`) fall through and surface as
+// fillable inputs — the user sees the misalignment instead of a silent
+// literal `{{...}}` in the preview.
+function detectSystemTokens(html, ctas = [], generatedImages = {}) {
   if (!html) return [];
+
+  const knownTokens = new Set();
+  for (const slot of Array.isArray(ctas) ? ctas : []) {
+    if (slot?.label_token) knownTokens.add(slot.label_token);
+    if (slot?.href_token) knownTokens.add(slot.href_token);
+  }
+  if (generatedImages && typeof generatedImages === 'object') {
+    for (const token of Object.keys(generatedImages)) {
+      knownTokens.add(token);
+    }
+  }
+
   const seen = new Set();
-  const re = /\[\[([A-Z][A-Z0-9_]*)\]\]/g;
+  const re = /\{\{\s*([A-Z][A-Z0-9_]*)\s*\}\}/g;
   let m;
   while ((m = re.exec(html)) !== null) {
+    const fullToken = m[0];
     const name = m[1];
-    if (name === 'PREHEADER') continue;
-    if (/^CTA_\d+_LABEL$/.test(name)) continue;
-    if (/^CTA_\d+_HREF$/.test(name)) continue;
+    if (knownTokens.has(fullToken)) continue;
     seen.add(name);
   }
   return Array.from(seen).sort();
 }
 
-// Swap the [[…]] placeholder tokens emitted by the email LLM with
-// per-variant values and pretty-print Liquid placeholders. Strings are
-// escaped before injection so user/LLM content can't break out of the
-// surrounding HTML.
+// Swap the {{…}} placeholder tokens emitted by the email LLM with their
+// resolved values. Strings are escaped before injection so user/LLM
+// content can't break out of the surrounding HTML.
 //
-// Tokens supported:
-//   [[PREHEADER]]            ← `preheader` string
-//   [[CTA_N_LABEL]]          ← chosen variant text for slot N (1-indexed)
-//   [[CTA_N_HREF]]           ← chosen variant href for slot N (defaults '#')
-//   [[<SYSTEM_TOKEN>]]       ← any other [[…]] token, looked up in
+// All placeholders are UPPERCASE — three categories:
+//
+//   {{CTA_<NAME>_LABEL}}     ← chosen variant text for the CTA slot
+//                              whose `name` equals NAME — looked up via
+//                              `slot.label_token` (backend pre-builds
+//                              the full braced string)
+//   {{CTA_<NAME>_HREF}}      ← chosen variant href for that slot
+//                              (defaults '#') — looked up via
+//                              `slot.href_token`
+//   {{IMAGE_<NAME>}}         ← data URI from `generatedImages` map (set
+//                              as raw URL inside `<img src="…">`); map
+//                              keys are the FULL braced token strings,
+//                              so substitution is direct `replaceAll`
+//                              with no name surgery. Unmatched IMAGE
+//                              tokens stay literal.
+//   {{<SYSTEM_TOKEN>}}       ← any other UPPERCASE {{…}} token (e.g.
+//                              `UNSUBSCRIBE_URL`, `COMPANY_ADDRESS`,
+//                              `FIRST_NAME`, `ORDER_ID`), looked up in
 //                              `systemTokens` map. Unfilled tokens stay
-//                              visible as `[[NAME]]` so the user can
-//                              spot what's still missing in the preview.
+//                              visible as `{{NAME}}` so the user can
+//                              spot what's still missing.
 //
-// `ctas` is a list-of-list (slot → variants). `chosenVariants` is a
-// per-slot index (defaults to 0 if missing).
+// The preheader (inbox preview text) is NOT a body_html placeholder —
+// the frontend renders it separately in the UI alongside the chosen
+// subject line. There's no PREHEADER substitution here.
+//
+// `ctas` is a list of CtaSlot `{ name, label_token, href_token,
+// variants }`. `chosenVariants` is a `slot.name → variantIndex` map
+// (defaults to 0 if missing).
 function swapEmailTokens(
   html,
-  { preheader = '', ctas = [], chosenVariants = [], systemTokens = {} } = {}
+  {
+    ctas = [],
+    chosenVariants = {},
+    systemTokens = {},
+    generatedImages = {},
+  } = {}
 ) {
   if (!html) return '';
-  let out = html.replace(/\[\[PREHEADER\]\]/g, escapeHtmlText(preheader));
-  (Array.isArray(ctas) ? ctas : []).forEach((slot, i) => {
-    const variants = Array.isArray(slot) ? slot : [];
-    const variant = variants[chosenVariants[i] ?? 0] || variants[0];
+  let out = html;
+
+  // CTA placeholders — backend ships `slot.label_token` /
+  // `slot.href_token` as full literal strings ('{{CTA_HERO_LABEL}}',
+  // '{{CTA_HERO_HREF}}'), so we never have to concatenate
+  // `CTA_${name}_<suffix>` ourselves. Substitute by direct `replaceAll`
+  // against the chosen variant's text + user-typed href.
+  (Array.isArray(ctas) ? ctas : []).forEach((slot) => {
+    if (!slot || typeof slot.name !== 'string') return;
+    const variants = Array.isArray(slot.variants) ? slot.variants : [];
+    if (variants.length === 0) return;
+    const idx = chosenVariants[slot.name];
+    const variant = variants[Number.isInteger(idx) ? idx : 0] || variants[0];
     const label = variant?.text || '';
     const href = variant?.href || '#';
-    const labelRe = new RegExp(`\\[\\[CTA_${i + 1}_LABEL\\]\\]`, 'g');
-    const hrefRe = new RegExp(`\\[\\[CTA_${i + 1}_HREF\\]\\]`, 'g');
-    out = out
-      .replace(labelRe, escapeHtmlText(label))
-      .replace(hrefRe, escapeHtmlAttr(href));
+    if (slot.label_token) {
+      out = out.replaceAll(slot.label_token, escapeHtmlText(label));
+    }
+    if (slot.href_token) {
+      out = out.replaceAll(slot.href_token, escapeHtmlAttr(href));
+    }
   });
+
+  // IMAGE placeholders — substitute data URIs from the placeholder map
+  // written by the `generate_email_images` tool. Keys are full literal
+  // `{{IMAGE_<NAME>}}` tokens (the LLM commits to one braced string and
+  // uses it identically in body_html + the tool call); we substitute by
+  // direct `replaceAll`, no regex build, no name surgery. Unmatched
+  // placeholders stay literal so the user sees what's missing.
+  if (generatedImages && typeof generatedImages === 'object') {
+    for (const [token, dataUri] of Object.entries(generatedImages)) {
+      if (!token || !dataUri) continue;
+      out = out.replaceAll(token, escapeHtmlAttr(dataUri));
+    }
+  }
+
   // System tokens — escape with the attr-safe escaper since the same
   // token may appear in either an `href="…"` context or a text-content
   // context and the attr escaper is a strict superset of the text one.
@@ -946,11 +1060,10 @@ function swapEmailTokens(
     for (const [name, value] of Object.entries(systemTokens)) {
       if (!value) continue;
       if (!/^[A-Z][A-Z0-9_]*$/.test(name)) continue;
-      const re = new RegExp(`\\[\\[${name}\\]\\]`, 'g');
+      const re = new RegExp(`\\{\\{\\s*${name}\\s*\\}\\}`, 'g');
       out = out.replace(re, escapeHtmlAttr(value));
     }
   }
-  out = prettyLiquidPlaceholders(out);
   return out;
 }
 
@@ -1116,60 +1229,66 @@ function truncateLabel(s, n = 50) {
 
 // Test-combination builder + carousel.
 //
-// Replaces the old "subject deck + per-slot CTA decks" layout. Now the
-// user composes A/B test combinations themselves: pick one subject
+// The user composes A/B test combinations themselves: pick one subject
 // variant + one variant per CTA slot, click "Add to deck", and that
 // combination renders as a card in the carousel. The deck is seeded
 // with one default combination (subject 0 + variant 0 of each slot) so
 // the preview is never empty.
 //
-// A combination is `{ subjectIdx: number, ctaVariants: number[] }` —
-// `ctaVariants` is parallel to the `ctas` slot list; each entry is the
-// chosen variant index for that slot.
-function EmailDesignSection({ bodyHtml, subjectLines, ctas, systemTokens }) {
+// A combination is `{ subjectIdx: number, ctaVariants: { [slotName]: number } }`.
+// `ctaVariants` is keyed by slot.name (NOT slot index) so combos stay
+// stable when slots are reordered or renamed across regens.
+function EmailDesignSection({ bodyHtml, subjectLines, ctas, systemTokens, generatedImages }) {
   const ctasArr = Array.isArray(ctas) ? ctas : [];
   const subjects = Array.isArray(subjectLines) ? subjectLines : [];
-  const slotCount = ctasArr.length;
+  const slotNames = ctasArr.map((slot) => slot?.name).filter(Boolean);
   const subjectCount = subjects.length;
+
+  function defaultCtaVariants() {
+    const map = {};
+    for (const name of slotNames) map[name] = 0;
+    return map;
+  }
 
   // Default = first subject + first variant of each slot. Used both as
   // the deck seed and the builder reset target whenever the upstream
   // data shape changes (a new generation lands).
   const defaultCombo = useMemo(
-    () => ({ subjectIdx: 0, ctaVariants: ctasArr.map(() => 0) }),
-    // Re-seed only when slot count changes — variant counts inside a
-    // slot don't invalidate the existing default 0-index pick.
-    [slotCount]
+    () => ({ subjectIdx: 0, ctaVariants: defaultCtaVariants() }),
+    // Re-seed only when the set of slot names changes — variant counts
+    // inside a slot don't invalidate the existing default 0-index pick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [slotNames.join('|')]
   );
 
   const [combos, setCombos] = useState(() => [defaultCombo]);
   const [draftSubjectIdx, setDraftSubjectIdx] = useState(0);
-  const [draftCtaVariants, setDraftCtaVariants] = useState(() => ctasArr.map(() => 0));
+  const [draftCtaVariants, setDraftCtaVariants] = useState(() => defaultCtaVariants());
 
-  // When upstream data reshapes (new generation, slot count change),
+  // When upstream data reshapes (new generation, slot set change),
   // reset the deck and the builder so stale combinations don't dangle
   // referencing dropped slots/subjects.
   useEffect(() => {
-    setCombos([{ subjectIdx: 0, ctaVariants: ctasArr.map(() => 0) }]);
+    const seed = defaultCtaVariants();
+    setCombos([{ subjectIdx: 0, ctaVariants: { ...seed } }]);
     setDraftSubjectIdx(0);
-    setDraftCtaVariants(ctasArr.map(() => 0));
-  }, [slotCount, subjectCount]);
+    setDraftCtaVariants({ ...seed });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slotNames.join('|'), subjectCount]);
 
   if (!bodyHtml) return null;
 
-  function setDraftCtaAt(slotIdx, variantIdx) {
-    setDraftCtaVariants((prev) => {
-      const next = prev.slice();
-      next[slotIdx] = variantIdx;
-      return next;
-    });
+  function setDraftCtaAt(slotName, variantIdx) {
+    setDraftCtaVariants((prev) => ({ ...prev, [slotName]: variantIdx }));
   }
 
   function combosEqual(a, b) {
     if (a.subjectIdx !== b.subjectIdx) return false;
-    if (a.ctaVariants.length !== b.ctaVariants.length) return false;
-    for (let i = 0; i < a.ctaVariants.length; i++) {
-      if (a.ctaVariants[i] !== b.ctaVariants[i]) return false;
+    const ak = Object.keys(a.ctaVariants || {});
+    const bk = Object.keys(b.ctaVariants || {});
+    if (ak.length !== bk.length) return false;
+    for (const k of ak) {
+      if ((a.ctaVariants?.[k] ?? 0) !== (b.ctaVariants?.[k] ?? 0)) return false;
     }
     return true;
   }
@@ -1177,7 +1296,7 @@ function EmailDesignSection({ bodyHtml, subjectLines, ctas, systemTokens }) {
   function addCombo() {
     const next = {
       subjectIdx: draftSubjectIdx,
-      ctaVariants: draftCtaVariants.slice(),
+      ctaVariants: { ...draftCtaVariants },
     };
     if (combos.some((c) => combosEqual(c, next))) return;
     setCombos((prev) => [...prev, next]);
@@ -1217,19 +1336,20 @@ function EmailDesignSection({ bodyHtml, subjectLines, ctas, systemTokens }) {
             </label>
           )}
 
-          {ctasArr.map((slot, slotIdx) => {
-            const variants = Array.isArray(slot) ? slot : [];
+          {ctasArr.map((slot) => {
+            if (!slot || typeof slot.name !== 'string') return null;
+            const variants = Array.isArray(slot.variants) ? slot.variants : [];
             if (variants.length === 0) return null;
-            const placement = variants[0]?.placement || `Slot ${slotIdx + 1}`;
+            const placement = variants[0]?.placement || slot.name;
             return (
-              <label key={slotIdx} className="flex flex-col gap-1">
+              <label key={slot.name} className="flex flex-col gap-1">
                 <span className="text-[10.5px] uppercase tracking-wider text-ink-400 dark:text-slate-500 font-semibold">
-                  CTA Slot {slotIdx + 1}
+                  CTA · {slot.name}
                   <span className="normal-case tracking-normal text-ink-400 dark:text-slate-500"> · {placement}</span>
                 </span>
                 <select
-                  value={draftCtaVariants[slotIdx] ?? 0}
-                  onChange={(e) => setDraftCtaAt(slotIdx, parseInt(e.target.value, 10))}
+                  value={draftCtaVariants[slot.name] ?? 0}
+                  onChange={(e) => setDraftCtaAt(slot.name, parseInt(e.target.value, 10))}
                   className="w-full px-2.5 py-1.5 rounded-md border border-ink-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-[12.5px] text-ink-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500/30 focus:border-rose-400"
                 >
                   {variants.map((v, vi) => (
@@ -1281,17 +1401,17 @@ function EmailDesignSection({ bodyHtml, subjectLines, ctas, systemTokens }) {
                 <EmailPreview
                   html={bodyHtml}
                   tokens={{
-                    preheader: subject.preview_text || '',
                     ctas: ctasArr,
                     chosenVariants: combo.ctaVariants,
                     systemTokens,
+                    generatedImages,
                   }}
                 />
                 <div className="px-4 py-2 border-t border-slate-100 bg-slate-50/60 text-[11px] text-slate-500 flex flex-wrap gap-x-3 gap-y-0.5">
                   <span>Subject {combo.subjectIdx + 1}</span>
-                  {combo.ctaVariants.map((vi, si) => (
-                    <span key={si}>
-                      Slot {si + 1} · V{vi + 1}
+                  {slotNames.map((name) => (
+                    <span key={name}>
+                      {name} · V{(combo.ctaVariants?.[name] ?? 0) + 1}
                     </span>
                   ))}
                 </div>
@@ -1309,12 +1429,15 @@ function EmailDesignSection({ bodyHtml, subjectLines, ctas, systemTokens }) {
 //   1. CTA URLs — one input PER VARIANT (a slot's A/B variants can
 //      legitimately point at different destinations, e.g. comparing a
 //      product page against a customer-stories page; the editor mirrors
-//      that flexibility instead of forcing a single shared URL).
-//   2. System tokens — every `[[NAME]]` token in `body_html` outside the
-//      well-known PREHEADER / CTA_N_* vocabulary. The catalog is open
-//      (the LLM picks descriptive names per email), so we discover them
-//      dynamically from the rendered HTML and surface one input per
-//      token.
+//      that flexibility instead of forcing a single shared URL). Inputs
+//      are keyed by slot.name to stay stable across regens.
+//   2. System tokens — every UPPERCASE `{{NAME}}` token in `body_html`
+//      outside the well-known CTA_<NAME>_LABEL / CTA_<NAME>_HREF /
+//      IMAGE_<NAME> vocabulary. The catalog is open (the LLM picks
+//      descriptive names per email), so we discover them dynamically
+//      from the rendered HTML and surface one input per token. All
+//      placeholders are UPPERCASE — there is no lowercase Liquid escape
+//      hatch; the user fills every system token in the UI before send.
 function EmailLinksEditor({
   ctas,
   ctaHrefs,
@@ -1337,14 +1460,15 @@ function EmailLinksEditor({
               CTA URLs · one per variant
             </div>
             <div className="flex flex-col gap-3">
-              {ctas.map((slot, i) => {
-                const variants = Array.isArray(slot) ? slot : [];
+              {ctas.map((slot) => {
+                if (!slot || typeof slot.name !== 'string') return null;
+                const variants = Array.isArray(slot.variants) ? slot.variants : [];
                 if (variants.length === 0) return null;
-                const placement = variants[0]?.placement || `Slot ${i + 1}`;
+                const placement = variants[0]?.placement || slot.name;
                 return (
-                  <div key={i} className="flex flex-col gap-2">
+                  <div key={slot.name} className="flex flex-col gap-2">
                     <div className="text-[11px] uppercase tracking-wider text-ink-500 dark:text-slate-400 flex items-center gap-2">
-                      <span>Slot {i + 1}</span>
+                      <span className="font-semibold text-ink-700 dark:text-slate-300">{slot.name}</span>
                       <span className="text-ink-300 dark:text-slate-600">·</span>
                       <span className="normal-case tracking-normal">{placement}</span>
                       {variants.length > 1 && (
@@ -1354,7 +1478,7 @@ function EmailLinksEditor({
                       )}
                     </div>
                     {variants.map((variant, vi) => {
-                      const key = `${i}:${vi}`;
+                      const key = `${slot.name}:${vi}`;
                       const value = ctaHrefs?.[key] ?? '';
                       const labelPreview = variant?.text || '';
                       return (
@@ -1369,7 +1493,7 @@ function EmailLinksEditor({
                             type="url"
                             placeholder="https://example.com/landing"
                             value={value}
-                            onChange={(e) => onCtaHrefChange(i, vi, e.target.value)}
+                            onChange={(e) => onCtaHrefChange(slot.name, vi, e.target.value)}
                             className="w-full px-2.5 py-1.5 rounded-md border border-ink-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-[12.5px] text-ink-900 dark:text-slate-100 placeholder:text-ink-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500/30 focus:border-rose-400"
                           />
                         </label>
@@ -1393,7 +1517,7 @@ function EmailLinksEditor({
                 return (
                   <label key={name} className="flex flex-col gap-1">
                     <span className="text-[11.5px] font-mono text-ink-700 dark:text-slate-300">
-                      [[{name}]]
+                      {`{{${name}}}`}
                     </span>
                     <input
                       type={isUrl ? 'url' : 'text'}
@@ -1420,10 +1544,12 @@ function EmailLinksEditor({
 // instance — different emails on the same screen don't share their
 // link inputs.
 //
-// `ctaHrefs` keys are composite `"${slotIdx}:${variantIdx}"` strings so
-// each variant's URL is independently editable (A/B variants in the
-// same slot can legitimately point at different destinations).
-function EditableEmailBody({ bodyHtml, subjectLines, ctas, ctaAbTests }) {
+// `ctaHrefs` keys are composite `"${slotName}:${variantIdx}"` strings
+// so each variant's URL is independently editable (A/B variants in the
+// same slot can legitimately point at different destinations) AND keys
+// stay stable across regens (slot positions can shift but slot.name
+// doesn't).
+function EditableEmailBody({ bodyHtml, subjectLines, ctas, ctaAbTests, generatedImages }) {
   const [ctaHrefs, setCtaHrefs] = useState({});
   const [systemTokens, setSystemTokens] = useState({});
 
@@ -1434,20 +1560,27 @@ function EditableEmailBody({ bodyHtml, subjectLines, ctas, ctaAbTests }) {
   // chosen variant's href into the iframe preview.
   const effectiveCtas = useMemo(
     () =>
-      ctasArr.map((slot, i) => {
-        if (!Array.isArray(slot)) return slot;
-        return slot.map((v, vi) => {
-          const userHref = ctaHrefs[`${i}:${vi}`];
-          return {
-            ...v,
-            href: userHref && userHref.length > 0 ? userHref : v?.href ?? null,
-          };
-        });
+      ctasArr.map((slot) => {
+        if (!slot || typeof slot.name !== 'string') return slot;
+        const variants = Array.isArray(slot.variants) ? slot.variants : [];
+        return {
+          ...slot,
+          variants: variants.map((v, vi) => {
+            const userHref = ctaHrefs[`${slot.name}:${vi}`];
+            return {
+              ...v,
+              href: userHref && userHref.length > 0 ? userHref : null,
+            };
+          }),
+        };
       }),
     [ctasArr, ctaHrefs]
   );
 
-  const detectedTokens = useMemo(() => detectSystemTokens(bodyHtml || ''), [bodyHtml]);
+  const detectedTokens = useMemo(
+    () => detectSystemTokens(bodyHtml || '', ctasArr, generatedImages),
+    [bodyHtml, ctasArr, generatedImages]
+  );
 
   return (
     <>
@@ -1456,8 +1589,8 @@ function EditableEmailBody({ bodyHtml, subjectLines, ctas, ctaAbTests }) {
       <EmailLinksEditor
         ctas={effectiveCtas}
         ctaHrefs={ctaHrefs}
-        onCtaHrefChange={(slot, variant, href) =>
-          setCtaHrefs((prev) => ({ ...prev, [`${slot}:${variant}`]: href }))
+        onCtaHrefChange={(slotName, variant, href) =>
+          setCtaHrefs((prev) => ({ ...prev, [`${slotName}:${variant}`]: href }))
         }
         detectedTokens={detectedTokens}
         systemTokens={systemTokens}
@@ -1470,6 +1603,7 @@ function EditableEmailBody({ bodyHtml, subjectLines, ctas, ctaAbTests }) {
         subjectLines={subjectLines}
         ctas={effectiveCtas}
         systemTokens={systemTokens}
+        generatedImages={generatedImages}
       />
     </>
   );
@@ -1508,17 +1642,33 @@ function CardShell({ title, badge, streaming, children }) {
 // `<email_output>` alongside `<email>` / `<sequence>`, not nested inside
 // them. Each render site (committed messages, live streaming) goes
 // through this so the layout stays consistent.
-function EmailOutputBlock({ kind, single, sequence, segmentationStrategy, warnings, streaming }) {
+function EmailOutputBlock({
+  kind,
+  single,
+  sequence,
+  segmentationStrategy,
+  warnings,
+  generatedImages,
+  streaming,
+}) {
   const hasOutputDetails =
     (segmentationStrategy && segmentationStrategy.length > 0) ||
     (warnings && warnings.length > 0);
   return (
     <div className="flex flex-col gap-4 max-w-[760px]">
       {kind === 'sequence' && sequence && (
-        <SequenceCard sequence={sequence} streaming={streaming} />
+        <SequenceCard
+          sequence={sequence}
+          generatedImages={generatedImages}
+          streaming={streaming}
+        />
       )}
       {kind === 'single' && single && (
-        <SingleEmailCard email={single} streaming={streaming} />
+        <SingleEmailCard
+          email={single}
+          generatedImages={generatedImages}
+          streaming={streaming}
+        />
       )}
       {hasOutputDetails && (
         <div className="rounded-xl border border-ink-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-5 py-4 flex flex-col gap-4">
@@ -1530,7 +1680,7 @@ function EmailOutputBlock({ kind, single, sequence, segmentationStrategy, warnin
   );
 }
 
-function SingleEmailCard({ email, streaming }) {
+function SingleEmailCard({ email, generatedImages, streaming }) {
   return (
     <CardShell title="Email" streaming={streaming}>
       <MetadataRow metadata={email.metadata} />
@@ -1542,12 +1692,13 @@ function SingleEmailCard({ email, streaming }) {
         subjectLines={email.subject_lines}
         ctas={email.ctas}
         ctaAbTests={email.cta_ab_tests}
+        generatedImages={generatedImages}
       />
     </CardShell>
   );
 }
 
-function SequenceCard({ sequence, streaming }) {
+function SequenceCard({ sequence, generatedImages, streaming }) {
   const stepNumbers = Object.keys(sequence.steps || {})
     .map((n) => parseInt(n, 10))
     .filter((n) => !Number.isNaN(n))
@@ -1671,6 +1822,7 @@ function SequenceCard({ sequence, streaming }) {
             subjectLines={activeStepObj.subject_lines}
             ctas={activeStepObj.ctas}
             ctaAbTests={activeStepObj.cta_ab_tests}
+            generatedImages={generatedImages}
           />
         </div>
       ) : (

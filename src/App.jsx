@@ -3,9 +3,29 @@ import Onboarding from './components/Onboarding.jsx';
 import ChatScreen from './components/ChatScreen.jsx';
 import AgentsScreen from './components/AgentsScreen.jsx';
 import EmailAgentScreen from './components/EmailAgentScreen.jsx';
+import EmailAgentSdkScreen from './components/EmailAgentSdkScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import { initChat } from './lib/api.js';
 import { subscribeProgress, buildWebhookRequest } from './lib/webhookBus.js';
+
+// Map sidebar slugs ↔ App view names. Sidebar emits 'foundations' |
+// 'execution' | 'email_sdk'; the App's view state uses 'foundations' |
+// 'agents' | 'email_agent' | 'email_sdk'. The first two collapse for
+// the sidebar (Execution = agents OR the email-agent detail view).
+function viewFromSidebar(slug, currentView) {
+  if (slug === 'foundations') return 'foundations';
+  if (slug === 'email_sdk') return 'email_sdk';
+  if (slug === 'execution') {
+    return currentView === 'email_agent' ? 'email_agent' : 'agents';
+  }
+  return currentView;
+}
+
+function sidebarFromView(view) {
+  if (view === 'foundations') return 'foundations';
+  if (view === 'email_sdk') return 'email_sdk';
+  return 'execution';
+}
 
 function newThreadId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -80,27 +100,25 @@ export default function App() {
     const effectiveThreadId =
       overrideThreadId.trim() || initResult.thread_id;
 
-    // All three views stay mounted; only one is visible at a time. This
+    // All four views stay mounted; only one is visible at a time. This
     // preserves component state (chat history, latest generation,
     // gap questions, in-flight streams, etc.) when the user toggles
-    // between Foundations and Execution.
+    // between Foundations / Execution / Email Agent (SDK).
+    const handleSidebar = (slug) => setView(viewFromSidebar(slug, view));
+
     return (
       <>
         <div className={view === 'foundations' ? 'h-screen' : 'hidden'}>
           <ChatScreen
             initResult={initResult}
             activeView="foundations"
-            onSelectView={(v) =>
-              setView(v === 'execution' ? 'agents' : 'foundations')
-            }
+            onSelectView={handleSidebar}
           />
         </div>
         <div className={view === 'agents' ? 'h-screen flex bg-ink-50 dark:bg-slate-950' : 'hidden'}>
           <Sidebar
-            activeView="execution"
-            onSelectView={(v) =>
-              setView(v === 'foundations' ? 'foundations' : 'agents')
-            }
+            activeView={sidebarFromView(view)}
+            onSelectView={handleSidebar}
           />
           <AgentsScreen
             onSelectAgent={(id) => {
@@ -113,15 +131,36 @@ export default function App() {
             threadId={initResult.thread_id}
             onBack={() => setView('agents')}
             onGoToFoundations={() => setView('foundations')}
-            onSelectView={(v) =>
-              setView(v === 'foundations' ? 'foundations' : 'agents')
-            }
+            onSelectView={handleSidebar}
             overrideThreadId={overrideThreadId}
             setOverrideThreadId={setOverrideThreadId}
             effectiveThreadId={effectiveThreadId}
           />
         </div>
+        <div className={view === 'email_sdk' ? 'h-screen' : 'hidden'}>
+          <EmailAgentSdkScreen
+            activeView={sidebarFromView(view)}
+            onSelectView={handleSidebar}
+          />
+        </div>
       </>
+    );
+  }
+
+  // Pre-onboarding shortcut: jump straight into the SDK agent without
+  // running the phase-1 blueprint pipeline. The SDK agent is fully
+  // independent of `initResult`, so we just render the screen with a
+  // sidebar that hands clicks on Foundations/Execution back to the
+  // onboarding screen (those views need init).
+  if (stage === 'sdk') {
+    return (
+      <EmailAgentSdkScreen
+        activeView="email_sdk"
+        onSelectView={(slug) => {
+          if (slug === 'email_sdk') return;
+          setStage('onboarding');
+        }}
+      />
     );
   }
 
@@ -132,6 +171,7 @@ export default function App() {
       progress={initProgress}
       onContinue={start}
       onSkip={start}
+      onOpenSdk={() => setStage('sdk')}
     />
   );
 }

@@ -50,6 +50,12 @@ export default function Sidebar({
           active={activeView === 'execution'}
           onClick={() => onSelectView?.('execution')}
         />
+        <NavItem
+          icon={<IconZap />}
+          label="Email Agent (SDK)"
+          active={activeView === 'email_sdk'}
+          onClick={() => onSelectView?.('email_sdk')}
+        />
       </nav>
 
       <div className="mt-auto px-2 pb-3 flex flex-col gap-0.5">
