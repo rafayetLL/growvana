@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
-import { IconSend, IconAttach, IconX, IconLink, IconPlus } from './icons.jsx';
+import { IconSend, IconAttach, IconX, IconLink, IconPlus, IconImage } from './icons.jsx';
 import { CHAT_FILE_EXTENSIONS, formatExtensions } from '../lib/fileTypes.js';
+
+// Backend's EmailAssetInput.name pattern: ^[A-Za-z0-9_-]{1,64}$
+const ASSET_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 function fileNameFromUrl(url) {
   try {
@@ -12,11 +15,35 @@ function fileNameFromUrl(url) {
   }
 }
 
-export default function Composer({ disabled, onSend, placeholder = 'Share your insights…' }) {
+/**
+ * Composer with two optional asset trays:
+ * - Chat attachments — always available; `onSend(text, urls)` carries them.
+ *   Plain pre-signed URLs the backend downloads as multimodal context.
+ * - Email image assets — gated by `emailAssets` + `onUpdateEmailAssets`.
+ *   Each is { url, name, alt_text? } and becomes a {{IMAGE_<name>}} token
+ *   in the rendered email. The screen tracks them across turns; they
+ *   ride along on every stream call. We do NOT send them via onSend —
+ *   they live in screen state, not per-message state.
+ */
+export default function Composer({
+  disabled,
+  onSend,
+  placeholder = 'Share your insights…',
+  emailAssets,
+  onUpdateEmailAssets,
+}) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [showAttach, setShowAttach] = useState(false);
   const [draftUrl, setDraftUrl] = useState('');
+  // Email-asset popover state — only used when the parent opted in.
+  const [showAsset, setShowAsset] = useState(false);
+  const [assetName, setAssetName] = useState('');
+  const [assetUrl, setAssetUrl] = useState('');
+  const [assetAlt, setAssetAlt] = useState('');
+  const [assetError, setAssetError] = useState('');
+
+  const assetsEnabled = Array.isArray(emailAssets) && typeof onUpdateEmailAssets === 'function';
 
   function submit() {
     const v = value.trim();
@@ -43,6 +70,49 @@ export default function Composer({ disabled, onSend, placeholder = 'Share your i
     setAttachments((prev) => prev.filter((u) => u !== url));
   }
 
+  function isLikelyUrl(s) {
+    try {
+      const u = new URL(s);
+      return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
+  function addEmailAsset() {
+    if (!assetsEnabled) return;
+    const name = assetName.trim();
+    const url = assetUrl.trim();
+    const alt = assetAlt.trim();
+    if (!name || !url) {
+      setAssetError('Name and URL are both required.');
+      return;
+    }
+    if (!ASSET_NAME_RE.test(name)) {
+      setAssetError('Name must be 1–64 chars, letters/digits/underscore/dash only.');
+      return;
+    }
+    if (!isLikelyUrl(url)) {
+      setAssetError('URL must start with http:// or https://.');
+      return;
+    }
+    if (emailAssets.some((a) => a.name === name)) {
+      setAssetError(`A different asset is already using the name "${name}".`);
+      return;
+    }
+    onUpdateEmailAssets([...emailAssets, { name, url, alt_text: alt || undefined }]);
+    setAssetName('');
+    setAssetUrl('');
+    setAssetAlt('');
+    setAssetError('');
+    setShowAsset(false);
+  }
+
+  function removeEmailAsset(name) {
+    if (!assetsEnabled) return;
+    onUpdateEmailAssets(emailAssets.filter((a) => a.name !== name));
+  }
+
   return (
     <div className="border-t border-ink-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 md:px-10 py-4">
       <div className="max-w-[900px] mx-auto">
@@ -66,6 +136,97 @@ export default function Composer({ disabled, onSend, placeholder = 'Share your i
                 </button>
               </span>
             ))}
+          </div>
+        )}
+
+        {assetsEnabled && emailAssets.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {emailAssets.map((a) => (
+              <span
+                key={a.name}
+                className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 text-[12px] rounded-md bg-moss-100 dark:bg-moss-500/15 border border-moss-300 dark:border-moss-500/40 text-moss-700 dark:text-moss-300 max-w-[280px]"
+                title={`{{IMAGE_${a.name}}} → ${a.url}${a.alt_text ? `\nalt: ${a.alt_text}` : ''}`}
+              >
+                <IconImage width={12} height={12} className="text-moss-600 dark:text-moss-400 shrink-0" />
+                <span className="truncate font-mono">{a.name}</span>
+                <button
+                  type="button"
+                  onClick={() => removeEmailAsset(a.name)}
+                  className="p-0.5 rounded hover:bg-moss-200 dark:hover:bg-moss-500/30 text-moss-600 dark:text-moss-400 hover:text-moss-800 dark:hover:text-moss-200 shrink-0"
+                  aria-label={`Remove asset ${a.name}`}
+                >
+                  <IconX width={12} height={12} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {assetsEnabled && showAsset && (
+          <div className="mb-2 bg-white dark:bg-slate-800/60 border border-ink-200 dark:border-slate-700 rounded-lg px-3 py-2.5 flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <IconImage width={14} height={14} className="text-moss-600 dark:text-moss-400 shrink-0" />
+              <span className="text-[11.5px] tracking-wider uppercase font-semibold text-ink-500 dark:text-slate-400">
+                Add email image
+              </span>
+            </div>
+            <div className="grid grid-cols-[120px_1fr] gap-1.5">
+              <input
+                type="text"
+                autoFocus
+                value={assetName}
+                onChange={(e) => setAssetName(e.target.value)}
+                placeholder="HERO"
+                className="bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-600 rounded-md px-2 py-1.5 text-[12.5px] font-mono text-ink-900 dark:text-slate-100 placeholder:text-ink-400 dark:placeholder:text-slate-500 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 dark:focus:ring-brand-500/20"
+              />
+              <input
+                type="url"
+                value={assetUrl}
+                onChange={(e) => setAssetUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addEmailAsset();
+                  } else if (e.key === 'Escape') {
+                    setShowAsset(false);
+                    setAssetError('');
+                  }
+                }}
+                placeholder="https://… (pre-signed image URL)"
+                className="bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-600 rounded-md px-2 py-1.5 text-[12.5px] text-ink-900 dark:text-slate-100 placeholder:text-ink-400 dark:placeholder:text-slate-500 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 dark:focus:ring-brand-500/20"
+              />
+            </div>
+            <input
+              type="text"
+              value={assetAlt}
+              onChange={(e) => setAssetAlt(e.target.value)}
+              placeholder="Alt text (optional)"
+              className="bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-600 rounded-md px-2 py-1.5 text-[12px] text-ink-700 dark:text-slate-200 placeholder:text-ink-400 dark:placeholder:text-slate-500 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 dark:focus:ring-brand-500/20"
+            />
+            {assetError && (
+              <div className="text-[11.5px] text-red-600 dark:text-red-300">{assetError}</div>
+            )}
+            <div className="flex items-center justify-between text-[11px] text-ink-400 dark:text-slate-500">
+              <span>
+                Renders as <code className="font-mono">{`{{IMAGE_${assetName.trim() || 'NAME'}}}`}</code> in the email HTML.
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => { setShowAsset(false); setAssetError(''); }}
+                  className="text-[12px] px-2 py-1 rounded-md text-ink-500 dark:text-slate-400 hover:bg-ink-50 dark:hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={addEmailAsset}
+                  className="text-[12px] px-2.5 py-1 rounded-md bg-moss-600 text-white hover:bg-moss-700 transition inline-flex items-center gap-1"
+                >
+                  <IconPlus width={12} height={12} /> Add
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -133,6 +294,23 @@ export default function Composer({ disabled, onSend, placeholder = 'Share your i
           >
             <IconAttach width={16} height={16} />
           </button>
+          {assetsEnabled && (
+            <button
+              type="button"
+              onClick={() => { setShowAsset((s) => !s); setAssetError(''); }}
+              className={
+                (showAsset
+                  ? 'text-moss-600 dark:text-moss-400 '
+                  : 'text-ink-400 dark:text-slate-500 hover:text-ink-700 dark:hover:text-slate-200 ') +
+                'p-1.5 rounded-md transition'
+              }
+              aria-label="Add email image asset"
+              aria-pressed={showAsset}
+              title="Add an email image asset (becomes a {{IMAGE_<name>}} token)"
+            >
+              <IconImage width={16} height={16} />
+            </button>
+          )}
           <button
             type="button"
             onClick={submit}

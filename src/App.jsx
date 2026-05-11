@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import Onboarding from './components/Onboarding.jsx';
 import ChatScreen from './components/ChatScreen.jsx';
 import AgentsScreen from './components/AgentsScreen.jsx';
-import EmailAgentScreen from './components/EmailAgentScreen.jsx';
+import EmailAgentBuilderScreen from './components/EmailAgentBuilderScreen.jsx';
 import EmailAgentSdkScreen from './components/EmailAgentSdkScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import { initChat } from './lib/api.js';
@@ -33,12 +33,14 @@ function newThreadId() {
 }
 
 export default function App() {
-  const [stage, setStage] = useState('onboarding'); // 'onboarding' | 'chat'
+  const [stage, setStage] = useState('onboarding'); // 'onboarding' | 'chat' | 'sdk' | 'email_direct'
   const [initResult, setInitResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   // Map<stage, { at, message }> populated from relay SSE events while init runs.
   const [initProgress, setInitProgress] = useState({});
+  // Direct-jump thread_id for the email builder shortcut. Bypasses init.
+  const [directThreadId, setDirectThreadId] = useState('');
 
   // Post-onboarding navigation. Three views share the same thread:
   //   'foundations' — Phase-1 chat (ChatScreen)
@@ -127,7 +129,7 @@ export default function App() {
           />
         </div>
         <div className={view === 'email_agent' ? 'h-screen' : 'hidden'}>
-          <EmailAgentScreen
+          <EmailAgentBuilderScreen
             threadId={initResult.thread_id}
             onBack={() => setView('agents')}
             onGoToFoundations={() => setView('foundations')}
@@ -164,6 +166,27 @@ export default function App() {
     );
   }
 
+  // Pre-onboarding shortcut: jump straight into the Email Campaign
+  // Builder with a user-supplied thread_id. Skips the foundation init;
+  // the builder calls `/email-agent/init` itself, which will surface a
+  // BlueprintMissingError if the thread has no blueprint yet.
+  if (stage === 'email_direct') {
+    return (
+      <EmailAgentBuilderScreen
+        threadId={directThreadId}
+        onBack={() => setStage('onboarding')}
+        onGoToFoundations={() => setStage('onboarding')}
+        onSelectView={(slug) => {
+          if (slug === 'execution') return;
+          setStage('onboarding');
+        }}
+        overrideThreadId={directThreadId}
+        setOverrideThreadId={setDirectThreadId}
+        effectiveThreadId={directThreadId}
+      />
+    );
+  }
+
   return (
     <Onboarding
       loading={loading}
@@ -172,6 +195,10 @@ export default function App() {
       onContinue={start}
       onSkip={start}
       onOpenSdk={() => setStage('sdk')}
+      onOpenEmailDirect={(threadId) => {
+        setDirectThreadId(threadId);
+        setStage('email_direct');
+      }}
     />
   );
 }

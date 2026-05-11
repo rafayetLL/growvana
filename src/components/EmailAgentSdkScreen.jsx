@@ -7,10 +7,16 @@ import { streamEmailAgentSdk } from '../lib/emailAgentSdkApi.js';
 // no checkpointer, no webhook relay. Session continuity is purely the
 // `session_id` the SDK returns on the first turn.
 //
-// Wire format from /email-agent-sdk/stream is documented in
+// Wire format (multipart/form-data + SSE) is documented in
 // `lib/emailAgentSdkApi.js`. Each turn produces one composite assistant
 // message that may carry text segments interleaved with tool use/result
 // pairs; we render them top-down in the order they streamed in.
+//
+// Image attachments: the user can attach images per-turn via the
+// paperclip button. Files attach to `pendingImages` until Send, at
+// which point they ship with the request and clear from the input.
+// The agent receives them as multimodal vision blocks AND as URLs it
+// can drop into design-phase HTML.
 
 function newId() {
   return Math.random().toString(36).slice(2, 10);
@@ -27,19 +33,28 @@ const API_ORIGIN = (() => {
   }
 })();
 
+const ACCEPTED_IMAGE_MIMES =
+  'image/png,image/jpeg,image/jpg,image/gif,image/webp,image/svg+xml';
+
 export default function EmailAgentSdkScreen({ activeView, onSelectView }) {
   const [messages, setMessages] = useState([]); // {id, role, parts: [...]}
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [sessionId, setSessionId] = useState(null);
-  // Email files the agent has written this session, keyed by filename
-  // so re-writes (Edit tool) update the existing iframe without piling
-  // up duplicates. Newest-first when rendered.
+  // Files staged for the NEXT send. Cleared on send (each turn re-uploads
+  // if needed — there's no persistent gallery).
+  // Shape: [{ file: File, previewUrl: string, id: string }]
+  const [pendingImages, setPendingImages] = useState([]);
+  // Phase artifacts the agent has written this session. One entry per
+  // file; re-writes (Edit) replace the existing entry by filename so
+  // the iframe / JSON viewer reloads rather than piling up duplicates.
+  // Shape: [{ filename, rel_path, kind, url, at }]
   const [emailFiles, setEmailFiles] = useState([]);
   const [activeFile, setActiveFile] = useState(null);
   const sessionIdRef = useRef(null);
   const abortRef = useRef(null);
   const scrollRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -51,11 +66,63 @@ export default function EmailAgentSdkScreen({ activeView, onSelectView }) {
     }
   }, [messages, busy]);
 
+  // Revoke any outstanding object URLs on unmount so we don't leak
+  // memory when the user navigates away mid-attachment.
+  useEffect(() => {
+    return () => {
+      pendingImages.forEach((p) => URL.revokeObjectURL(p.previewUrl));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function handleFilePick(e) {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    const next = files.map((file) => ({
+      id: newId(),
+      file,
+      previewUrl: URL.createObjectURL(file),
+    }));
+    setPendingImages((prev) => [...prev, ...next]);
+    // Reset the input so picking the same file twice in a row still
+    // fires onChange.
+    e.target.value = '';
+  }
+
+  function removePendingImage(id) {
+    setPendingImages((prev) => {
+      const target = prev.find((p) => p.id === id);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((p) => p.id !== id);
+    });
+  }
+
   async function send() {
     const trimmed = input.trim();
-    if (!trimmed || busy) return;
+    if ((!trimmed && pendingImages.length === 0) || busy) return;
 
-    const userMsg = { id: newId(), role: 'user', parts: [{ type: 'text', text: trimmed }] };
+    // Snapshot the staged images and clear the picker — they belong to
+    // THIS turn only and shouldn't leak into a follow-up if the user
+    // forgets they're attached.
+    const turnImages = pendingImages;
+    setPendingImages([]);
+
+    const userParts = [];
+    if (trimmed) userParts.push({ type: 'text', text: trimmed });
+    // Render thumbnails immediately from the local object URLs — no
+    // wait for the server `user_image` event. The event still arrives
+    // (we handle it below) but by then the bubble is already painted.
+    for (const p of turnImages) {
+      userParts.push({
+        type: 'image',
+        url: p.previewUrl,
+        name: p.file.name,
+        mime_type: p.file.type,
+        local: true,
+      });
+    }
+
+    const userMsg = { id: newId(), role: 'user', parts: userParts };
     const assistantMsg = { id: newId(), role: 'assistant', parts: [] };
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setInput('');
@@ -66,12 +133,37 @@ export default function EmailAgentSdkScreen({ activeView, onSelectView }) {
 
     try {
       for await (const evt of streamEmailAgentSdk({
-        user_message: trimmed,
+        user_message: trimmed || '(image attachment)',
         session_id: sessionIdRef.current,
+        images: turnImages.map((p) => p.file),
         signal: controller.signal,
       })) {
         if (evt.type === 'session') {
           setSessionId(evt.session_id);
+        } else if (evt.type === 'user_image') {
+          // Server confirms an image was persisted. Swap our local
+          // object-URL preview for the server-served URL so the
+          // bubble keeps rendering even after the local URL is
+          // revoked. Match by filename — first unmatched local image
+          // gets the server URL.
+          setMessages((prev) => prev.map((m) => {
+            if (m.id !== userMsg.id) return m;
+            let swapped = false;
+            const parts = m.parts.map((part) => {
+              if (
+                !swapped
+                && part.type === 'image'
+                && part.local
+                && part.name === evt.name
+              ) {
+                swapped = true;
+                URL.revokeObjectURL(part.url);
+                return { ...part, url: `${API_ORIGIN}${evt.url}`, local: false };
+              }
+              return part;
+            });
+            return { ...m, parts };
+          }));
         } else if (evt.type === 'text_delta') {
           setMessages((prev) => appendToAssistant(prev, assistantMsg.id, (parts) => {
             const last = parts[parts.length - 1];
@@ -120,13 +212,19 @@ export default function EmailAgentSdkScreen({ activeView, onSelectView }) {
           // Canonical aggregated text for the turn — already shown via
           // `text_delta`. Nothing to render; deltas built the same string.
         } else if (evt.type === 'email_file') {
+          // Phase artifact — branch by kind. Cache-bust by appending
+          // a timestamp so iframe / JSON refetch reloads on re-write.
+          const stamped = `${API_ORIGIN}${evt.url}?t=${Date.now()}`;
           setEmailFiles((prev) => {
             const without = prev.filter((f) => f.filename !== evt.filename);
-            // Cache-bust by appending a timestamp so iframe reloads on
-            // re-write. Newest first.
-            const stamped = `${API_ORIGIN}${evt.url}?t=${Date.now()}`;
             return [
-              { filename: evt.filename, path: evt.path, url: stamped, at: Date.now() },
+              {
+                filename: evt.filename,
+                rel_path: evt.rel_path,
+                kind: evt.kind,
+                url: stamped,
+                at: Date.now(),
+              },
               ...without,
             ];
           });
@@ -176,6 +274,8 @@ export default function EmailAgentSdkScreen({ activeView, onSelectView }) {
     setMessages([]);
     setEmailFiles([]);
     setActiveFile(null);
+    pendingImages.forEach((p) => URL.revokeObjectURL(p.previewUrl));
+    setPendingImages([]);
   }
 
   const activeEmailFile =
@@ -229,40 +329,66 @@ export default function EmailAgentSdkScreen({ activeView, onSelectView }) {
           )}
         </div>
 
-        <footer className="border-t border-ink-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 py-4">
-          <div className="max-w-3xl mx-auto flex gap-2">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              placeholder="Ask the email agent (Cmd/Ctrl+Enter to send)…"
-              rows={2}
-              className="flex-1 resize-none rounded-md border border-ink-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-[13px] text-ink-900 dark:text-slate-100 placeholder:text-ink-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
-              disabled={busy}
-            />
-            {busy ? (
-              <button
-                type="button"
-                onClick={cancel}
-                className="px-4 py-2 rounded-md bg-rose-600 text-white text-[13px] font-medium hover:bg-rose-700"
-              >
-                Cancel
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={send}
-                disabled={!input.trim()}
-                className="px-4 py-2 rounded-md bg-brand-600 text-white text-[13px] font-medium hover:bg-brand-700 disabled:opacity-50"
-              >
-                Send
-              </button>
+        <footer className="border-t border-ink-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 py-3">
+          <div className="max-w-3xl mx-auto flex flex-col gap-2">
+            {pendingImages.length > 0 && (
+              <PendingImageStrip
+                images={pendingImages}
+                onRemove={removePendingImage}
+              />
             )}
+            <div className="flex gap-2 items-end">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ACCEPTED_IMAGE_MIMES}
+                multiple
+                className="hidden"
+                onChange={handleFilePick}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={busy}
+                title="Attach image(s)"
+                className="h-[46px] w-10 flex items-center justify-center rounded-md border border-ink-200 dark:border-slate-700 text-ink-500 dark:text-slate-400 hover:bg-ink-50 dark:hover:bg-slate-800 disabled:opacity-40"
+                aria-label="Attach image"
+              >
+                <PaperclipIcon />
+              </button>
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    send();
+                  }
+                }}
+                placeholder="Ask the email agent (Cmd/Ctrl+Enter to send)…"
+                rows={2}
+                className="flex-1 resize-none rounded-md border border-ink-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-[13px] text-ink-900 dark:text-slate-100 placeholder:text-ink-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                disabled={busy}
+              />
+              {busy ? (
+                <button
+                  type="button"
+                  onClick={cancel}
+                  className="h-[46px] px-4 rounded-md bg-rose-600 text-white text-[13px] font-medium hover:bg-rose-700"
+                >
+                  Cancel
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={send}
+                  disabled={!input.trim() && pendingImages.length === 0}
+                  className="h-[46px] px-4 rounded-md bg-brand-600 text-white text-[13px] font-medium hover:bg-brand-700 disabled:opacity-50"
+                >
+                  Send
+                </button>
+              )}
+            </div>
           </div>
         </footer>
       </main>
@@ -283,15 +409,44 @@ function EmptyState() {
         Email Agent (SDK)
       </div>
       <p className="text-[13px] text-ink-500 dark:text-slate-400 max-w-md mx-auto">
-        Independent autonomous agent backed by the Claude Agent SDK. It has
-        the marketing-CMO, email-content, and email-design skills, plus
-        web search and full filesystem access in its workspace.
+        Independent autonomous agent backed by the Claude Agent SDK. It walks
+        you through Plan → Content → Design phases, grounded in the brand
+        Blueprint. Attach images with the paperclip — the agent can both
+        view them and embed them in the rendered email.
       </p>
       <div className="mt-6 flex flex-wrap justify-center gap-2 text-[12px] text-ink-500 dark:text-slate-400">
-        <Suggestion>Draft a re-engagement email for lapsed users</Suggestion>
-        <Suggestion>As a CMO, audit my GTM for a B2B SaaS launch</Suggestion>
-        <Suggestion>Write and design a Black Friday email</Suggestion>
+        <Suggestion>Plan a re-engagement email for lapsed users</Suggestion>
+        <Suggestion>Draft a Black Friday sequence (3 emails)</Suggestion>
+        <Suggestion>Design a welcome email — I'll attach the hero image</Suggestion>
       </div>
+    </div>
+  );
+}
+
+function PendingImageStrip({ images, onRemove }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {images.map((p) => (
+        <div
+          key={p.id}
+          className="relative group h-14 w-14 rounded-md overflow-hidden border border-ink-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+          title={p.file.name}
+        >
+          <img
+            src={p.previewUrl}
+            alt={p.file.name}
+            className="w-full h-full object-cover"
+          />
+          <button
+            type="button"
+            onClick={() => onRemove(p.id)}
+            className="absolute top-0.5 right-0.5 h-4 w-4 rounded-full bg-black/60 text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100"
+            aria-label="Remove image"
+          >
+            ×
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -301,7 +456,7 @@ function EmailPreviewPanel({ files, active, onSelect }) {
     <aside className="w-1/2 flex flex-col bg-ink-50 dark:bg-slate-950 min-w-0">
       <div className="border-b border-ink-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2">
         <div className="text-[11px] uppercase tracking-wider text-ink-400 dark:text-slate-500 mb-1.5">
-          Rendered emails
+          Phase artifacts
         </div>
         <div className="flex flex-wrap gap-1.5">
           {files.map((f) => {
@@ -312,13 +467,14 @@ function EmailPreviewPanel({ files, active, onSelect }) {
                 type="button"
                 onClick={() => onSelect(f.filename)}
                 className={[
-                  'text-[11.5px] px-2.5 py-1 rounded-md font-mono',
+                  'text-[11.5px] px-2.5 py-1 rounded-md font-mono inline-flex items-center gap-1.5',
                   isActive
                     ? 'bg-brand-600 text-white'
                     : 'bg-ink-100 dark:bg-slate-800 text-ink-600 dark:text-slate-300 hover:bg-ink-200 dark:hover:bg-slate-700',
                 ].join(' ')}
-                title={f.path}
+                title={f.rel_path || f.filename}
               >
+                <KindBadge kind={f.kind} active={isActive} />
                 {f.filename}
               </button>
             );
@@ -327,20 +483,98 @@ function EmailPreviewPanel({ files, active, onSelect }) {
       </div>
       <div className="flex-1 min-h-0 p-3">
         {active ? (
-          <iframe
-            key={active.url}
-            src={active.url}
-            title={active.filename}
-            className="w-full h-full rounded-md bg-white shadow-sm border border-ink-200 dark:border-slate-700"
-            sandbox="allow-same-origin"
-          />
+          active.kind === 'html' ? (
+            <iframe
+              key={active.url}
+              src={active.url}
+              title={active.filename}
+              className="w-full h-full rounded-md bg-white shadow-sm border border-ink-200 dark:border-slate-700"
+              sandbox="allow-same-origin"
+            />
+          ) : (
+            <JsonPreview key={active.url} url={active.url} filename={active.filename} />
+          )
         ) : (
           <div className="h-full grid place-items-center text-[12px] text-ink-400 dark:text-slate-500">
-            Select an email to preview
+            Select an artifact to preview
           </div>
         )}
       </div>
     </aside>
+  );
+}
+
+function KindBadge({ kind, active }) {
+  // Tiny pill so users can tell plan/content/html apart at a glance
+  // even when filenames are similar (e.g. shared slug).
+  const label = kind === 'plan' ? 'PLAN' : kind === 'content' ? 'COPY' : 'HTML';
+  return (
+    <span
+      className={[
+        'inline-block px-1 rounded text-[9px] font-semibold tracking-wide',
+        active
+          ? 'bg-white/20 text-white'
+          : kind === 'plan'
+            ? 'bg-amber-200 text-amber-900'
+            : kind === 'content'
+              ? 'bg-sky-200 text-sky-900'
+              : 'bg-emerald-200 text-emerald-900',
+      ].join(' ')}
+    >
+      {label}
+    </span>
+  );
+}
+
+function JsonPreview({ url, filename }) {
+  // Fetches the JSON file from the backend and pretty-prints it. Read-
+  // only viewer — to mutate the JSON, ask the agent to edit it.
+  const [state, setState] = useState({ status: 'loading', text: '', error: null });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ status: 'loading', text: '', error: null });
+    fetch(url, { cache: 'no-store' })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        const text = await res.text();
+        try {
+          const parsed = JSON.parse(text);
+          return JSON.stringify(parsed, null, 2);
+        } catch {
+          return text;
+        }
+      })
+      .then((pretty) => {
+        if (!cancelled) setState({ status: 'ok', text: pretty, error: null });
+      })
+      .catch((err) => {
+        if (!cancelled)
+          setState({ status: 'error', text: '', error: err.message || String(err) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
+  if (state.status === 'loading') {
+    return (
+      <div className="h-full grid place-items-center text-[12px] text-ink-400 dark:text-slate-500">
+        Loading {filename}…
+      </div>
+    );
+  }
+  if (state.status === 'error') {
+    return (
+      <div className="h-full grid place-items-center text-[12px] text-rose-500 dark:text-rose-400">
+        Failed to load {filename}: {state.error}
+      </div>
+    );
+  }
+  return (
+    <pre className="w-full h-full overflow-auto rounded-md bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-700 p-3 text-[12px] leading-snug font-mono text-ink-800 dark:text-slate-200 whitespace-pre">
+      {state.text}
+    </pre>
   );
 }
 
@@ -352,13 +586,50 @@ function Suggestion({ children }) {
   );
 }
 
+function PaperclipIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+    </svg>
+  );
+}
+
 function MessageBubble({ message }) {
   if (message.role === 'user') {
+    const textParts = message.parts.filter((p) => p.type === 'text');
+    const imageParts = message.parts.filter((p) => p.type === 'image');
     return (
-      <div className="self-end max-w-[80%]">
-        <div className="rounded-2xl rounded-br-sm bg-brand-600 text-white px-4 py-2.5 text-[13.5px] whitespace-pre-wrap">
-          {message.parts.map((p, i) => (p.type === 'text' ? <span key={i}>{p.text}</span> : null))}
-        </div>
+      <div className="self-end max-w-[80%] flex flex-col items-end gap-1.5">
+        {imageParts.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 justify-end">
+            {imageParts.map((p, i) => (
+              <img
+                key={i}
+                src={p.url}
+                alt={p.name}
+                className="h-20 w-20 object-cover rounded-md border border-ink-200 dark:border-slate-700 bg-white"
+                title={p.name}
+              />
+            ))}
+          </div>
+        )}
+        {textParts.length > 0 && (
+          <div className="rounded-2xl rounded-br-sm bg-brand-600 text-white px-4 py-2.5 text-[13.5px] whitespace-pre-wrap">
+            {textParts.map((p, i) => (
+              <span key={i}>{p.text}</span>
+            ))}
+          </div>
+        )}
       </div>
     );
   }

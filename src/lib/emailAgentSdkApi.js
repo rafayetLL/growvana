@@ -1,49 +1,63 @@
 // Thin SSE client for the /api/v1/email-agent-sdk endpoint.
 //
-// The backend wraps the Claude Agent SDK's `query()` loop and emits one
-// `data: <json>` frame per event:
+// Wire format:
+//   POST /api/v1/email-agent-sdk/stream  (multipart/form-data)
+//     Form parts:
+//       - user_message: string  (required)
+//       - session_id:   string  (optional — resume an existing session)
+//       - images:       File[]  (zero or more image attachments scoped
+//           to THIS turn only; backend persists each to disk and feeds
+//           the bytes into the agent's prompt as image content blocks)
 //
+// The backend wraps the Claude Agent SDK's `query()` loop and emits one
+// `data: <json>` SSE frame per event:
+//
+//   - { type: 'user_image', name, url, mime_type }
+//       Fired once per uploaded image at the very start of the turn,
+//       BEFORE the agent stream opens. The frontend renders these as
+//       thumbnails next to the user's message bubble. URLs are
+//       relative to the API origin.
 //   - { type: 'session', session_id }
-//       Fired once at session start. The frontend persists this and
-//       sends it back as `session_id` on subsequent turns to resume the
-//       same agent session (keeps prior reasoning + tool history).
+//       Fired once at session start. Persist and pass back as
+//       `session_id` on subsequent turns to resume.
 //   - { type: 'text_delta', content }
 //       Assistant text token chunk. With `include_partial_messages=True`
-//       these stream in real time (multiple per turn) — append.
+//       these stream live (multiple per turn) — append.
 //   - { type: 'text_final', content }
-//       Canonical full text for a TextBlock (lands at end of turn,
-//       after all `text_delta`s for it). Same string the deltas built
-//       up — frontend can ignore it (we already rendered) or use it to
-//       reconcile any dropped chunks.
+//       Canonical full text for a TextBlock at end of turn. Frontend
+//       can ignore (we already rendered) or use to reconcile drops.
 //   - { type: 'tool_use', id, name, input }
-//       Agent invoked a tool. Use `id` to correlate with the matching
-//       `tool_result` frame.
 //   - { type: 'tool_result', tool_use_id, content, is_error }
-//       Tool returned. `content` is a string (the backend stringifies
-//       list-shaped results before forwarding).
-//   - { type: 'email_file', filename, path, url }
-//       Agent wrote/edited an HTML file under `email_outputs/`. `url`
-//       is relative to the API host — render in an iframe by prefixing
-//       with `VITE_API_BASE_URL`'s origin (strip `/api/v1`).
+//   - { type: 'email_file', kind, filename, rel_path, path, url }
+//       Agent wrote/edited a phase artifact under `email_outputs/`.
+//       `kind` is 'plan' | 'content' | 'html' so the frontend can pick
+//       the right preview surface (JSON viewer for plan/content,
+//       iframe for html). `url` is relative to the API origin.
 //   - { type: 'done', subtype, result, session_id, total_cost_usd, num_turns }
-//       Loop ended. `subtype === 'success'` means the task completed;
-//       any other subtype is an error/limit (max_turns, max_budget,
-//       refusal, internal). `result` is the final assistant text on
-//       success, null otherwise.
 //   - { type: 'error', message }
-//       Transport-level failure (e.g. SDK threw). The stream closes
-//       after this frame.
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
-export async function* streamEmailAgentSdk({ user_message, session_id, signal }) {
-  const body = { user_message };
-  if (session_id) body.session_id = session_id;
+export async function* streamEmailAgentSdk({
+  user_message,
+  session_id,
+  images,
+  signal,
+}) {
+  const form = new FormData();
+  form.append('user_message', user_message);
+  if (session_id) form.append('session_id', session_id);
+  // Attach each File under the same field name; FastAPI assembles them
+  // into `list[UploadFile]` server-side. `images` is optional — empty
+  // or undefined means a plain text turn (string-prompt path).
+  for (const file of images || []) {
+    form.append('images', file, file.name);
+  }
 
   const res = await fetch(`${API_BASE}/email-agent-sdk/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    // No Content-Type header — the browser sets the multipart boundary.
+    body: form,
     signal,
   });
   if (!res.ok || !res.body) {

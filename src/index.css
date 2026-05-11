@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -7,6 +9,26 @@
   color: #0f172a;
   color-scheme: light;
 }
+
+/* Email-agent builder splitter handle */
+.builder-splitter {
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  flex-shrink: 0;
+}
+.builder-splitter::after {
+  content: '';
+  position: absolute;
+  inset: 0 2px;
+  background: #E4E5DF;
+  border-radius: 2px;
+  transition: background 120ms ease;
+}
+.builder-splitter:hover::after { background: #BBD4C2; }
+html.dark .builder-splitter::after { background: #334155; }
+html.dark .builder-splitter:hover::after { background: #475569; }
 
 html.dark {
   color: #e2e8f0;

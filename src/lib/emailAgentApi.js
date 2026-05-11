@@ -48,8 +48,42 @@
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
-export async function* streamEmailAgent({ thread_id, user_message, webhook_request, signal }) {
-  const body = { email_request: { thread_id, user_message } };
+/**
+ * POST /api/v1/email-agent/init
+ * Returns { thread_id, ai_message, questions: [{gap, question, options}] }.
+ * Mirrors the foundation phase's /chat/init — kicks off email-side gap
+ * analysis, returns 3–7 questions for the user to answer inline.
+ */
+export async function initEmailAgent({ thread_id }) {
+  const res = await fetch(`${API_BASE}/email-agent/init`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ thread_id }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`email-agent init failed (${res.status}): ${text || res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function* streamEmailAgent({
+  thread_id,
+  user_message,
+  gap_answers,
+  email_assets,
+  webhook_request,
+  signal,
+}) {
+  const body = { email_request: { thread_id } };
+  if (user_message !== undefined) body.email_request.user_message = user_message;
+  if (gap_answers !== undefined) body.email_request.gap_answers = gap_answers;
+  // `email_assets` is the persisted-across-turns image list. Backend replaces
+  // the stored list with whatever we send on this turn; sending undefined or
+  // omitting leaves the previously persisted list in place.
+  if (email_assets !== undefined && email_assets.length > 0) {
+    body.email_request.email_assets = email_assets;
+  }
   if (webhook_request) body.webhook_request = webhook_request;
 
   const res = await fetch(`${API_BASE}/email-agent/stream`, {

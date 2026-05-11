@@ -107,4 +107,7 @@ export const IconCalendar = (p) => (
 export const IconDownload = (p) => (
   <svg {...base} {...p}><path d="M12 4v12" /><path d="m7 11 5 5 5-5" /><path d="M5 20h14" /></svg>
 );
+export const IconImage = (p) => (
+  <svg {...base} {...p}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-5-5L5 21" /></svg>
+);
 // Reserved for streaming web-search UI — see docs/streaming-search-results.md
