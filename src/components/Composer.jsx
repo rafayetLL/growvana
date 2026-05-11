@@ -20,8 +20,9 @@ function fileNameFromUrl(url) {
  * - Chat attachments — always available; `onSend(text, urls)` carries them.
  *   Plain pre-signed URLs the backend downloads as multimodal context.
  * - Email image assets — gated by `emailAssets` + `onUpdateEmailAssets`.
- *   Each is { url, name, alt_text? } and becomes a {{IMAGE_<name>}} token
- *   in the rendered email. The screen tracks them across turns; they
+ *   Each is { url, name, alt_text? } and becomes a {{<name>}} token in
+ *   the rendered email (user-supplied name verbatim — no prefix added).
+ *   The screen tracks them across turns; they
  *   ride along on every stream call. We do NOT send them via onSend —
  *   they live in screen state, not per-message state.
  */
@@ -145,7 +146,7 @@ export default function Composer({
               <span
                 key={a.name}
                 className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 text-[12px] rounded-md bg-moss-100 dark:bg-moss-500/15 border border-moss-300 dark:border-moss-500/40 text-moss-700 dark:text-moss-300 max-w-[280px]"
-                title={`{{IMAGE_${a.name}}} → ${a.url}${a.alt_text ? `\nalt: ${a.alt_text}` : ''}`}
+                title={`{{${a.name}}} → ${a.url}${a.alt_text ? `\nalt: ${a.alt_text}` : ''}`}
               >
                 <IconImage width={12} height={12} className="text-moss-600 dark:text-moss-400 shrink-0" />
                 <span className="truncate font-mono">{a.name}</span>
@@ -208,7 +209,7 @@ export default function Composer({
             )}
             <div className="flex items-center justify-between text-[11px] text-ink-400 dark:text-slate-500">
               <span>
-                Renders as <code className="font-mono">{`{{IMAGE_${assetName.trim() || 'NAME'}}}`}</code> in the email HTML.
+                Renders as <code className="font-mono">{`{{${assetName.trim() || 'NAME'}}}`}</code> in the email HTML.
               </span>
               <div className="flex items-center gap-1.5">
                 <button
@@ -306,7 +307,7 @@ export default function Composer({
               }
               aria-label="Add email image asset"
               aria-pressed={showAsset}
-              title="Add an email image asset (becomes a {{IMAGE_<name>}} token)"
+              title="Add an email image asset (becomes a {{<name>}} token)"
             >
               <IconImage width={16} height={16} />
             </button>

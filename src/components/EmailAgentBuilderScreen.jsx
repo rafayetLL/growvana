@@ -1055,15 +1055,15 @@ function DesignCanvas({ kind, single, sequence, images, emailAssets }) {
     return '';
   }, [kind, single, sequence, stepIdx]);
 
-  // Merge map for {{IMAGE_<name>}} substitution: backend-emitted
-  // generated_images (tool output, keyed by FULL braced token) PLUS
-  // user-uploaded emailAssets (keyed by `name` here — we build the
-  // braced token client-side). User uploads win conflicts; they're the
-  // ones the user can see and curate.
+  // Merge map for {{<name>}} substitution: backend-emitted generated_images
+  // (tool output, keyed by FULL braced token) PLUS user-uploaded
+  // emailAssets (keyed by user-supplied `name` verbatim — we wrap it in
+  // {{ }} client-side, no `IMAGE_` or any other prefix added). User
+  // uploads win conflicts; they're the ones the user can see and curate.
   const mergedImageMap = useMemo(() => {
     const out = { ...(images || {}) };
     for (const a of emailAssets || []) {
-      out[`{{IMAGE_${a.name}}}`] = a.url;
+      out[`{{${a.name}}}`] = a.url;
     }
     return out;
   }, [images, emailAssets]);
@@ -1133,7 +1133,7 @@ function DesignCanvas({ kind, single, sequence, images, emailAssets }) {
         <iframe
           title="Designed email preview"
           srcDoc={substituted}
-          sandbox=""
+          sandbox="allow-same-origin"
           className="block w-full"
           style={{ height: viewport === 'mobile' ? 760 : 900, border: 0 }}
         />
