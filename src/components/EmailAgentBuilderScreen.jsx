@@ -85,6 +85,13 @@ export default function EmailAgentBuilderScreen({
   projectName,
   onNewProject,
   isActive = true,
+  // PDF flow: when set, this is the response from /email-agent/init_with_pdf
+  // ({ thread_id, ai_message, questions }). The screen seeds messages +
+  // gapQuestions from it and SKIPS its own /email-agent/init call (the
+  // email-side checkpoint is already populated, and /init's phase-1
+  // lookup would 400 for this thread).
+  preInitedResult = null,
+  hideFoundation = false,
 }) {
   const taskIdRef = useRef(newTaskId());
   const taskId = taskIdRef.current;
@@ -146,6 +153,20 @@ export default function EmailAgentBuilderScreen({
     if (!threadId) return;
     if (initedThreadRef.current === threadId) return;
     initedThreadRef.current = threadId;
+
+    // PDF flow: /email-agent/init_with_pdf has already run upstream and
+    // its response is handed to us via `preInitedResult`. Skip the
+    // /init API call entirely — calling it would 400 because there's
+    // no phase-1 checkpoint to read brand context from.
+    if (preInitedResult) {
+      const intro = preInitedResult.ai_message || '';
+      if (intro) {
+        setMessages([{ role: 'assistant', content: intro, time: Date.now() }]);
+      }
+      setGapQuestions(preInitedResult.questions || []);
+      return;
+    }
+
     const thisThread = threadId;
     const stillCurrent = () => initedThreadRef.current === thisThread;
     setInitLoading(true);
@@ -170,7 +191,7 @@ export default function EmailAgentBuilderScreen({
         if (!stillCurrent()) return;
         setInitLoading(false);
       });
-  }, [threadId, isActive]);
+  }, [threadId, isActive, preInitedResult]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -187,7 +208,10 @@ export default function EmailAgentBuilderScreen({
     abortRef.current = controller;
     setTurnError(null);
     setTyping(true);
-    setStreamingText('');
+    // null (not '') so the loader's `streamingText === null` gate is true
+    // until the first ai_message_token lands. Empty-string would render an
+    // empty assistant bubble AND hide the loader.
+    setStreamingText(null);
     setDraftingAgent(null);
 
     const webhook_request = buildWebhookRequest({
@@ -207,7 +231,6 @@ export default function EmailAgentBuilderScreen({
         signal: controller.signal,
       })) {
         if (evt.type === 'ai_message_token') {
-          if (assistantText === '') setTyping(false);
           assistantText += evt.content || '';
           setStreamingText(assistantText);
         } else if (
@@ -290,6 +313,7 @@ export default function EmailAgentBuilderScreen({
         activeView="email_agent"
         onSelectView={onSelectView}
         onNewProject={onNewProject}
+        hideFoundation={hideFoundation}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -350,11 +374,8 @@ export default function EmailAgentBuilderScreen({
                     streaming
                   />
                 )}
-                {typing && streamingText === null && (
-                  <ChatMessageItem
-                    message={{ role: 'assistant', content: '', time: null }}
-                    streaming
-                  />
+                {typing && !draftingAgent && (
+                  <DraftingPill name="cmo_agent" />
                 )}
 
                 {draftingAgent && (
@@ -531,6 +552,7 @@ function CanvasTabs({ activeTab, setActiveTab, hasPlan, hasContent, hasHtml }) {
 }
 
 const DRAFTING_LABELS = {
+  cmo_agent: 'Thinking',
   email_content: 'Writing copy',
   email_design: 'Designing email',
 };
@@ -538,15 +560,16 @@ const DRAFTING_LABELS = {
 function DraftingPill({ name }) {
   const label = DRAFTING_LABELS[name] || 'Drafting';
   return (
-    <div className="flex gap-3 max-w-[600px]">
+    <div className="flex gap-3 max-w-[600px] animate-pulse">
       <div className="h-7 w-7 rounded-full bg-moss-100 dark:bg-moss-500/20 grid place-items-center shrink-0 mt-0.5 text-moss-600 dark:text-moss-400">
         <IconSparkle width={14} height={14} />
       </div>
       <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-moss-300 dark:border-moss-500/40 bg-moss-50 dark:bg-moss-500/10 text-[12.5px] text-moss-700 dark:text-moss-300">
-        <span className="relative flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-moss-500 opacity-60" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-moss-500" />
-        </span>
+        <span
+          className="h-3 w-3 rounded-full border-2 border-moss-300 dark:border-moss-500/40 border-t-moss-600 dark:border-t-moss-400 animate-spin"
+          role="status"
+          aria-label="Loading"
+        />
         {label}…
       </div>
     </div>

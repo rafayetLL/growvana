@@ -75,6 +75,28 @@ export async function initEmailAgent({ thread_id }) {
   return res.json();
 }
 
+/**
+ * POST /api/v1/email-agent/init_with_pdf  (multipart/form-data)
+ * Returns the same shape as /init — { thread_id, ai_message, questions }.
+ * Skips the phase-1 checkpoint entirely; brand_bible + buyer_personas are
+ * sourced from the uploaded PDF (must contain the headings "Brand Bible"
+ * and "Buyer Personas" in that order).
+ */
+export async function initEmailAgentWithPdf({ thread_id, pdfFile }) {
+  const form = new FormData();
+  form.append('thread_id', thread_id);
+  form.append('pdf_file', pdfFile);
+  const res = await fetch(`${API_BASE}/email-agent/init_with_pdf`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`email-agent init_with_pdf failed (${res.status}): ${text || res.statusText}`);
+  }
+  return res.json();
+}
+
 export async function* streamEmailAgent({
   thread_id,
   user_message,

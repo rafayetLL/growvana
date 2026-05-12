@@ -1,11 +1,17 @@
 import React, { useState } from 'react';
+import EmailLanding from './components/EmailLanding.jsx';
 import Onboarding from './components/Onboarding.jsx';
 import ChatScreen from './components/ChatScreen.jsx';
 import AgentsScreen from './components/AgentsScreen.jsx';
 import EmailAgentBuilderScreen from './components/EmailAgentBuilderScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import { initChat } from './lib/api.js';
+import { initEmailAgentWithPdf } from './lib/emailAgentApi.js';
 import { subscribeProgress, buildWebhookRequest } from './lib/webhookBus.js';
+
+// PDF flow has no website to scrape and no foundation step to derive a
+// brand name from — keep the project label static and uniform.
+const PDF_FLOW_PROJECT_NAME = 'Company Name';
 
 // Map sidebar slugs ↔ App view names. Sidebar emits 'foundations' |
 // 'execution' | 'email_agent'; the App's view state uses the same three
@@ -29,12 +35,20 @@ function newThreadId() {
 }
 
 export default function App() {
-  const [stage, setStage] = useState('onboarding'); // 'onboarding' | 'chat'
+  const [stage, setStage] = useState('landing'); // 'landing' | 'onboarding' | 'chat'
   const [initResult, setInitResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   // Map<stage, { at, message }> populated from relay SSE events while init runs.
   const [initProgress, setInitProgress] = useState({});
+
+  // PDF-flow only: the response from /email-agent/init_with_pdf. Passed to
+  // EmailAgentBuilderScreen so it skips its own /email-agent/init call
+  // (the email-side checkpoint is already populated by init_with_pdf, and
+  // /init's phase-1 checkpoint lookup would fail for this thread).
+  // null when in foundation flow.
+  const [preInitedEmail, setPreInitedEmail] = useState(null);
+  const pdfFlow = preInitedEmail !== null;
 
   // Post-onboarding navigation. Three views share the same thread:
   //   'foundations' — Phase-1 chat (ChatScreen)
@@ -48,15 +62,39 @@ export default function App() {
   // for new API calls.
   const [overrideThreadId, setOverrideThreadId] = useState('');
 
-  // Reset everything back to onboarding ("New project" button in Sidebar).
+  // Reset everything back to the landing page ("New project" button in Sidebar).
   function handleNewProject() {
-    setStage('onboarding');
+    setStage('landing');
     setInitResult(null);
+    setPreInitedEmail(null);
     setLoading(false);
     setError(null);
     setInitProgress({});
     setOverrideThreadId('');
     setView('foundations');
+  }
+
+  async function startWithPdf(file) {
+    setLoading(true);
+    setError(null);
+    setInitProgress({});
+    const thread_id = newThreadId();
+    try {
+      const result = await initEmailAgentWithPdf({ thread_id, pdfFile: file });
+      setInitResult({
+        thread_id: result.thread_id,
+        company_name: PDF_FLOW_PROJECT_NAME,
+        ai_message: result.ai_message,
+        questions: result.questions || [],
+      });
+      setPreInitedEmail(result);
+      setView('email_agent');
+      setStage('chat');
+    } catch (e) {
+      setError(e.message || 'Failed to upload PDF');
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function start({ company_url, file_urls }) {
@@ -116,28 +154,32 @@ export default function App() {
 
     return (
       <>
-        <div className={view === 'foundations' ? 'h-screen' : 'hidden'}>
-          <ChatScreen
-            initResult={initResult}
-            activeView="foundations"
-            onSelectView={handleSidebar}
-            projectName={projectName}
-            onNewProject={handleNewProject}
-          />
-        </div>
-        <div className={view === 'agents' ? 'h-screen flex bg-ink-50 dark:bg-slate-950' : 'hidden'}>
-          <Sidebar
-            projectName={projectName}
-            activeView={sidebarFromView(view)}
-            onSelectView={handleSidebar}
-            onNewProject={handleNewProject}
-          />
-          <AgentsScreen
-            onSelectAgent={(id) => {
-              if (id === 'email_marketing') setView('email_agent');
-            }}
-          />
-        </div>
+        {!pdfFlow && (
+          <div className={view === 'foundations' ? 'h-screen' : 'hidden'}>
+            <ChatScreen
+              initResult={initResult}
+              activeView="foundations"
+              onSelectView={handleSidebar}
+              projectName={projectName}
+              onNewProject={handleNewProject}
+            />
+          </div>
+        )}
+        {!pdfFlow && (
+          <div className={view === 'agents' ? 'h-screen flex bg-ink-50 dark:bg-slate-950' : 'hidden'}>
+            <Sidebar
+              projectName={projectName}
+              activeView={sidebarFromView(view)}
+              onSelectView={handleSidebar}
+              onNewProject={handleNewProject}
+            />
+            <AgentsScreen
+              onSelectAgent={(id) => {
+                if (id === 'email_marketing') setView('email_agent');
+              }}
+            />
+          </div>
+        )}
         <div className={view === 'email_agent' ? 'h-screen' : 'hidden'}>
           <EmailAgentBuilderScreen
             threadId={initResult.thread_id}
@@ -150,19 +192,33 @@ export default function App() {
             effectiveThreadId={effectiveThreadId}
             projectName={projectName}
             onNewProject={handleNewProject}
+            preInitedResult={preInitedEmail}
+            hideFoundation={pdfFlow}
           />
         </div>
       </>
     );
   }
 
+  if (stage === 'onboarding') {
+    return (
+      <Onboarding
+        loading={loading}
+        error={error}
+        progress={initProgress}
+        onContinue={start}
+        onSkip={start}
+        onBack={() => setStage('landing')}
+      />
+    );
+  }
+
   return (
-    <Onboarding
-      loading={loading}
+    <EmailLanding
+      onSelectFoundation={() => setStage('onboarding')}
+      onUploadPdf={startWithPdf}
+      uploading={loading}
       error={error}
-      progress={initProgress}
-      onContinue={start}
-      onSkip={start}
     />
   );
 }

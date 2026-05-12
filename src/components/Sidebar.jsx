@@ -19,6 +19,9 @@ export default function Sidebar({
   activeView = 'foundations',
   onSelectView,
   onNewProject,
+  // PDF flow: hide the Foundations tab since no foundation chat ran for
+  // this thread. Execution + Email Agent stay accessible.
+  hideFoundation = false,
 }) {
   const [theme, toggleTheme] = useTheme();
   const isDark = theme === 'dark';
@@ -49,19 +52,23 @@ export default function Sidebar({
       </div>
 
       <nav className="px-2 mt-2 flex flex-col gap-0.5">
-        <NavItem
-          icon={<IconSettings />}
-          label="Foundations"
-          right={`${foundationPercent}%`}
-          active={activeView === 'foundations'}
-          onClick={() => onSelectView?.('foundations')}
-        />
-        <NavItem
-          icon={<IconZap />}
-          label="Execution"
-          active={activeView === 'execution'}
-          onClick={() => onSelectView?.('execution')}
-        />
+        {!hideFoundation && (
+          <NavItem
+            icon={<IconSettings />}
+            label="Foundations"
+            right={`${foundationPercent}%`}
+            active={activeView === 'foundations'}
+            onClick={() => onSelectView?.('foundations')}
+          />
+        )}
+        {!hideFoundation && (
+          <NavItem
+            icon={<IconZap />}
+            label="Execution"
+            active={activeView === 'execution'}
+            onClick={() => onSelectView?.('execution')}
+          />
+        )}
         <NavItem
           icon={<IconMail />}
           label="Email Agent"
