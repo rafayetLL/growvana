@@ -4,10 +4,18 @@
 // Frame types:
 //   - { type: 'ai_message_token', content }
 //       Tokens for the user-facing <message> body.
+//   - { type: 'email_content_drafting', name: 'email_content' }
+//       Fired when the email_content node starts generating. Mirrors
+//       the chat stream's `milestone_drafting` shape.
+//   - { type: 'email_design_drafting', name: 'email_design' }
+//       Fired when the email_design node starts generating. May arrive
+//       multiple times per turn because the design node is a ReAct loop
+//       (read/edit/verify tool calls re-enter the node). Frontend
+//       dedupes by `name` so the loader appears once per turn.
 //   - { type: 'email_generation_started', kind: 'single' | 'sequence' }
 //       Fired ONCE the moment the LLM's output reveals the kind. Lets
 //       the UI show a 'Drafting…' indicator before any structured
-//       webhook lands. Mirrors the chat stream's `milestone_drafting`.
+//       webhook lands.
 //   - { type: 'email_body_html_token', content, step_number? }
 //       Tokens for the styled HTML body fragment (with
 //       `{{CTA_<NAME>_LABEL}}`, `{{CTA_<NAME>_HREF}}`, `{{IMAGE_<NAME>}}`,

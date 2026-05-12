@@ -68,6 +68,15 @@ export default function Sidebar({
           active={activeView === 'email_agent'}
           onClick={() => onSelectView?.('email_agent')}
         />
+        {activeView === 'email_agent' && (
+          <button
+            type="button"
+            onClick={() => onSelectView?.('email_agent')}
+            className="ml-7 mt-0.5 flex items-center gap-2 px-3 py-1.5 rounded-md text-[12.5px] font-medium bg-brand-50 dark:bg-brand-500/10 text-brand-700 dark:text-brand-500 border-l-2 border-brand-500"
+          >
+            Campaign Builder
+          </button>
+        )}
       </nav>
 
       <div className="mt-auto px-2 pb-3 flex flex-col gap-0.5">

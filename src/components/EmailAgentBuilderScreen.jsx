@@ -115,6 +115,11 @@ export default function EmailAgentBuilderScreen({
   // set in mind; also used at iframe-render time to substitute
   // {{IMAGE_<name>}} tokens with their URLs.
   const [emailAssets, setEmailAssets] = useState([]);
+  // Tracks which node is currently drafting this turn. Set on the first
+  // `email_content_drafting` / `email_design_drafting` SSE frame and cleared
+  // on `done`. The design node is a ReAct loop so the event re-fires per
+  // re-entry — we dedupe by storing only the last `name` seen.
+  const [draftingAgent, setDraftingAgent] = useState(null);
   const [chatW, onSplitDown] = useSplit(460, 360, 720);
 
   const abortRef = useRef(null);
@@ -183,6 +188,7 @@ export default function EmailAgentBuilderScreen({
     setTurnError(null);
     setTyping(true);
     setStreamingText('');
+    setDraftingAgent(null);
 
     const webhook_request = buildWebhookRequest({
       task_id: taskId,
@@ -204,6 +210,16 @@ export default function EmailAgentBuilderScreen({
           if (assistantText === '') setTyping(false);
           assistantText += evt.content || '';
           setStreamingText(assistantText);
+        } else if (
+          evt.type === 'email_content_drafting' ||
+          evt.type === 'email_design_drafting'
+        ) {
+          // Dedupe: only flip state when the active node changes. Design
+          // re-fires its event on every ReAct loop re-entry; keeping the
+          // setter idempotent prevents React from re-rendering needlessly
+          // and keeps the loader appearing exactly once per node per turn.
+          const name = evt.name || (evt.type === 'email_content_drafting' ? 'email_content' : 'email_design');
+          setDraftingAgent((cur) => (cur === name ? cur : name));
         } else if (evt.type === 'done') {
           if (assistantText) {
             const text = assistantText;
@@ -241,6 +257,7 @@ export default function EmailAgentBuilderScreen({
     } finally {
       setTyping(false);
       setStreamingText(null);
+      setDraftingAgent(null);
       abortRef.current = null;
     }
   }
@@ -339,6 +356,10 @@ export default function EmailAgentBuilderScreen({
                     streaming
                   />
                 )}
+
+                {draftingAgent && (
+                  <DraftingPill name={draftingAgent} />
+                )}
               </div>
             </div>
 
@@ -420,40 +441,30 @@ export default function EmailAgentBuilderScreen({
 
 function BuilderHeader({ onBack, activeTab }) {
   return (
-    <header className="px-6 pt-3 border-b border-botanical-line dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0">
-      <div className="flex items-center gap-3">
-        {onBack && (
-          <button
-            type="button"
-            onClick={onBack}
-            className="inline-flex items-center gap-1.5 text-[13px] text-botanical-text2 dark:text-slate-400 hover:text-forest-900 dark:hover:text-slate-100 transition"
-          >
-            <IconArrowLeft width={14} height={14} /> Agents
-          </button>
-        )}
-        {onBack && <div className="h-7 w-px bg-botanical-line dark:bg-slate-700" />}
-        <div className="h-9 w-9 rounded-xl bg-moss-100 dark:bg-moss-500/15 grid place-items-center text-moss-700 dark:text-moss-400">
-          <IconMail width={18} height={18} />
-        </div>
-        <div className="leading-tight">
-          <div className="font-display text-[18px] font-semibold text-forest-900 dark:text-slate-100">
-            Email Agent
-          </div>
-          <div className="text-[11.5px] text-botanical-text3 dark:text-slate-400">
-            Brief → plan → copy → designed email · all in one thread
-          </div>
-        </div>
-        <div className="ml-auto text-[11px] tracking-wider uppercase font-semibold text-botanical-text3 dark:text-slate-500">
-          {TABS.find((t) => t.id === activeTab)?.hint}
-        </div>
-      </div>
-      <div className="mt-2 flex items-center gap-1">
+    <header className="h-14 px-6 flex items-center gap-3 border-b border-botanical-line dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0">
+      {onBack && (
         <button
           type="button"
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 -mb-px rounded-t-md text-[12.5px] font-semibold text-moss-700 dark:text-moss-400 border border-b-transparent border-botanical-line dark:border-slate-700 bg-white dark:bg-slate-900"
+          onClick={onBack}
+          className="inline-flex items-center gap-1.5 text-[13px] text-botanical-text2 dark:text-slate-400 hover:text-forest-900 dark:hover:text-slate-100 transition"
         >
-          <IconMail width={13} height={13} /> Campaign Builder
+          <IconArrowLeft width={14} height={14} /> Agents
         </button>
+      )}
+      {onBack && <div className="h-7 w-px bg-botanical-line dark:bg-slate-700" />}
+      <div className="h-9 w-9 rounded-xl bg-moss-100 dark:bg-moss-500/15 grid place-items-center text-moss-700 dark:text-moss-400">
+        <IconMail width={18} height={18} />
+      </div>
+      <div className="leading-tight">
+        <div className="font-display text-[18px] font-semibold text-forest-900 dark:text-slate-100">
+          Email Agent
+        </div>
+        <div className="text-[11.5px] text-botanical-text3 dark:text-slate-400">
+          Brief → plan → copy → designed email · all in one thread
+        </div>
+      </div>
+      <div className="ml-auto text-[11px] tracking-wider uppercase font-semibold text-botanical-text3 dark:text-slate-500">
+        {TABS.find((t) => t.id === activeTab)?.hint}
       </div>
     </header>
   );
@@ -515,6 +526,29 @@ function CanvasTabs({ activeTab, setActiveTab, hasPlan, hasContent, hasHtml }) {
           </button>
         );
       })}
+    </div>
+  );
+}
+
+const DRAFTING_LABELS = {
+  email_content: 'Writing copy',
+  email_design: 'Designing email',
+};
+
+function DraftingPill({ name }) {
+  const label = DRAFTING_LABELS[name] || 'Drafting';
+  return (
+    <div className="flex gap-3 max-w-[600px]">
+      <div className="h-7 w-7 rounded-full bg-moss-100 dark:bg-moss-500/20 grid place-items-center shrink-0 mt-0.5 text-moss-600 dark:text-moss-400">
+        <IconSparkle width={14} height={14} />
+      </div>
+      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-moss-300 dark:border-moss-500/40 bg-moss-50 dark:bg-moss-500/10 text-[12.5px] text-moss-700 dark:text-moss-300">
+        <span className="relative flex h-2 w-2">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-moss-500 opacity-60" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-moss-500" />
+        </span>
+        {label}…
+      </div>
     </div>
   );
 }
