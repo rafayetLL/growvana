@@ -273,7 +273,7 @@ export default function Onboarding({ onContinue, onSkip, onOpenSdk, onOpenEmailD
           {/* Company URL card */}
           <section className="mt-10 bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-800 rounded-xl p-5 shadow-card">
             <label className="block text-[12.5px] font-medium text-ink-700 dark:text-slate-200 mb-2">
-              Company URL
+              Company URL <span className="text-red-500">*</span>
             </label>
             <div className="flex items-center gap-2 border border-ink-200 dark:border-slate-700 rounded-lg px-3 py-2.5 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100 dark:focus-within:ring-brand-500/20 transition">
               <IconLink className="text-ink-400 dark:text-slate-500 shrink-0" />
@@ -295,7 +295,7 @@ export default function Onboarding({ onContinue, onSkip, onOpenSdk, onOpenEmailD
           <section className="mt-5 bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-800 rounded-xl p-5 shadow-card">
             <div className="flex items-center justify-between">
               <label className="text-[12.5px] font-medium text-ink-700 dark:text-slate-200">
-                Document URLs
+                Document URLs <span className="text-ink-400 dark:text-slate-500 font-normal">(optional)</span>
               </label>
               <span className="text-[11.5px] text-ink-400 dark:text-slate-500">{formatExtensions(INIT_FILE_EXTENSIONS, { separator: ' · ' })}</span>
             </div>

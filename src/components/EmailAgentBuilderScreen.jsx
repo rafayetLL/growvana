@@ -123,11 +123,16 @@ export default function EmailAgentBuilderScreen({
 
   // Auto-init on mount: mirror the foundation /chat/init pattern. The
   // backend's /email-agent/init blocks until the gap-analysis node has
-  // produced 3–7 questions to inline as a GapQuestions card.
+  // produced 3–7 questions to inline as a GapQuestions card. Use the
+  // foundations-side `threadId` (= initResult.thread_id) — NOT the
+  // override-aware `effectiveThreadId` — because the email-init endpoint
+  // looks up phase-1 deliverables at `phase_1::<thread_id>`, which were
+  // written under the same `initResult.thread_id` that ChatScreen uses.
   useEffect(() => {
-    if (initedThreadRef.current === effectiveThreadId) return;
-    initedThreadRef.current = effectiveThreadId;
-    const thisThread = effectiveThreadId;
+    if (!threadId) return;
+    if (initedThreadRef.current === threadId) return;
+    initedThreadRef.current = threadId;
+    const thisThread = threadId;
     const stillCurrent = () => initedThreadRef.current === thisThread;
     setInitLoading(true);
     setInitError(null);
@@ -151,7 +156,7 @@ export default function EmailAgentBuilderScreen({
         if (!stillCurrent()) return;
         setInitLoading(false);
       });
-  }, [effectiveThreadId]);
+  }, [threadId]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -173,13 +178,13 @@ export default function EmailAgentBuilderScreen({
     const webhook_request = buildWebhookRequest({
       task_id: taskId,
       event_type: 'workflow.email_agent',
-      data: { thread_id: effectiveThreadId },
+      data: { thread_id: threadId },
     });
 
     let assistantText = '';
     try {
       for await (const evt of streamEmailAgent({
-        thread_id: effectiveThreadId,
+        thread_id: threadId,
         user_message,
         gap_answers,
         email_assets: emailAssets,
