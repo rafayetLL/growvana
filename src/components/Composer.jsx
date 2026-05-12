@@ -109,11 +109,6 @@ export default function Composer({
     setShowAsset(false);
   }
 
-  function removeEmailAsset(name) {
-    if (!assetsEnabled) return;
-    onUpdateEmailAssets(emailAssets.filter((a) => a.name !== name));
-  }
-
   return (
     <div className="border-t border-ink-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 md:px-10 py-4">
       <div className="max-w-[900px] mx-auto">
@@ -145,19 +140,11 @@ export default function Composer({
             {emailAssets.map((a) => (
               <span
                 key={a.name}
-                className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 text-[12px] rounded-md bg-moss-100 dark:bg-moss-500/15 border border-moss-300 dark:border-moss-500/40 text-moss-700 dark:text-moss-300 max-w-[280px]"
+                className="inline-flex items-center gap-1.5 px-2 py-1 text-[12px] rounded-md bg-moss-100 dark:bg-moss-500/15 border border-moss-300 dark:border-moss-500/40 text-moss-700 dark:text-moss-300 max-w-[280px]"
                 title={`{{${a.name}}} → ${a.url}${a.alt_text ? `\nalt: ${a.alt_text}` : ''}`}
               >
                 <IconImage width={12} height={12} className="text-moss-600 dark:text-moss-400 shrink-0" />
                 <span className="truncate font-mono">{a.name}</span>
-                <button
-                  type="button"
-                  onClick={() => removeEmailAsset(a.name)}
-                  className="p-0.5 rounded hover:bg-moss-200 dark:hover:bg-moss-500/30 text-moss-600 dark:text-moss-400 hover:text-moss-800 dark:hover:text-moss-200 shrink-0"
-                  aria-label={`Remove asset ${a.name}`}
-                >
-                  <IconX width={12} height={12} />
-                </button>
               </span>
             ))}
           </div>

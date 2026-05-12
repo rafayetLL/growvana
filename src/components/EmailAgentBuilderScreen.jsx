@@ -116,18 +116,25 @@ export default function EmailAgentBuilderScreen({
 
   const abortRef = useRef(null);
   const scrollRef = useRef(null);
+  // Tracks the thread_id we've already kicked off init for. StrictMode
+  // double-invokes effects in dev; without this guard `/email-agent/init`
+  // fires twice on mount.
+  const initedThreadRef = useRef(null);
 
   // Auto-init on mount: mirror the foundation /chat/init pattern. The
   // backend's /email-agent/init blocks until the gap-analysis node has
   // produced 3–7 questions to inline as a GapQuestions card.
   useEffect(() => {
-    let cancelled = false;
+    if (initedThreadRef.current === effectiveThreadId) return;
+    initedThreadRef.current = effectiveThreadId;
+    const thisThread = effectiveThreadId;
+    const stillCurrent = () => initedThreadRef.current === thisThread;
     setInitLoading(true);
     setInitError(null);
     setBlueprintMissing(false);
-    initEmailAgent({ thread_id: effectiveThreadId })
+    initEmailAgent({ thread_id: thisThread })
       .then((res) => {
-        if (cancelled) return;
+        if (!stillCurrent()) return;
         const intro = res?.ai_message || '';
         if (intro) {
           setMessages([{ role: 'assistant', content: intro, time: Date.now() }]);
@@ -135,17 +142,15 @@ export default function EmailAgentBuilderScreen({
         setGapQuestions(res?.questions || []);
       })
       .catch((e) => {
-        if (cancelled) return;
+        if (!stillCurrent()) return;
         const msg = e?.message || 'Failed to start email session';
         setInitError(msg);
         if (msg.toLowerCase().includes('blueprint')) setBlueprintMissing(true);
       })
       .finally(() => {
-        if (!cancelled) setInitLoading(false);
+        if (!stillCurrent()) return;
+        setInitLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [effectiveThreadId]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -697,23 +702,52 @@ function SectionCard({ label, children }) {
 }
 
 function WarningRow({ warning }) {
-  const severity = (warning?.severity || warning?.level || 'info').toLowerCase();
-  const tone = severity === 'high' || severity === 'critical' || severity === 'error'
+  // Defensive: warnings should arrive from the backend as objects
+  // ({type, severity, warning_message}) via `EmailPlan.model_dump()`, but
+  // accept JSON-encoded strings too in case some path stringifies them.
+  let w = warning;
+  if (typeof w === 'string') {
+    const trimmed = w.trim();
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        w = JSON.parse(trimmed);
+      } catch {
+        w = { warning_message: trimmed };
+      }
+    } else {
+      w = { warning_message: trimmed };
+    }
+  }
+  if (!w || typeof w !== 'object') return null;
+
+  const severity = (w.severity || w.level || 'info').toLowerCase();
+  const category = w.type || w.category || '';
+  const message = w.warning_message || w.message || w.detail || '';
+  const tone = severity === 'high' || severity === 'critical' || severity === 'error' || severity === 'blocking'
     ? 'bg-clay-100 text-clay-700 border-clay-300'
-    : severity === 'medium' || severity === 'warning'
+    : severity === 'medium' || severity === 'warning' || severity === 'required'
     ? 'bg-amber-50 text-amber-700 border-amber-200'
     : 'bg-moss-100 text-moss-700 border-moss-200';
 
+  if (!category && !message) return null;
+
   return (
     <div className={`rounded-lg border px-3 py-2 ${tone} dark:bg-slate-800 dark:border-slate-700 dark:text-slate-200`}>
-      {warning?.category && (
-        <div className="text-[10.5px] tracking-wider uppercase font-semibold opacity-80 mb-0.5">
-          {warning.category}
-        </div>
-      )}
-      <div className="text-[12.5px] leading-snug">
-        {warning?.message || warning?.detail || JSON.stringify(warning)}
+      <div className="flex items-center gap-2 mb-0.5">
+        {category && (
+          <span className="text-[10.5px] tracking-wider uppercase font-semibold opacity-80">
+            {category.replace(/_/g, ' ')}
+          </span>
+        )}
+        {severity && severity !== 'info' && (
+          <span className="text-[10px] tracking-wider uppercase font-semibold opacity-60">
+            · {severity}
+          </span>
+        )}
       </div>
+      {message && (
+        <div className="text-[12.5px] leading-snug">{message}</div>
+      )}
     </div>
   );
 }
