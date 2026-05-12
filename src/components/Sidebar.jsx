@@ -8,6 +8,8 @@ import {
   IconSun,
   IconMoon,
   IconZap,
+  IconPlus,
+  IconMail,
 } from './icons.jsx';
 import { useTheme } from '../lib/theme.js';
 
@@ -16,6 +18,7 @@ export default function Sidebar({
   foundationPercent = 0,
   activeView = 'foundations',
   onSelectView,
+  onNewProject,
 }) {
   const [theme, toggleTheme] = useTheme();
   const isDark = theme === 'dark';
@@ -26,12 +29,21 @@ export default function Sidebar({
         <Logo />
       </div>
 
-      <div className="px-4 pt-5 pb-3">
-        <div className="text-[11px] tracking-wider uppercase text-ink-400 dark:text-slate-500 font-semibold">
+      <div className="px-4 pt-4 pb-3">
+        {onNewProject && (
+          <button
+            type="button"
+            onClick={onNewProject}
+            className="w-full inline-flex items-center justify-center gap-1.5 rounded-md border border-ink-200 dark:border-slate-700 px-2.5 py-1.5 text-[12px] font-medium text-ink-700 dark:text-slate-200 hover:bg-ink-50 dark:hover:bg-slate-800 transition"
+          >
+            <IconPlus width={12} height={12} /> New project
+          </button>
+        )}
+        <div className="mt-3 text-[11px] tracking-wider uppercase text-ink-400 dark:text-slate-500 font-semibold">
           Project
         </div>
         <button className="mt-1.5 w-full flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-ink-50 dark:hover:bg-slate-800 transition">
-          <span className="text-[13.5px] font-semibold text-ink-900 dark:text-slate-100 truncate">{projectName}</span>
+          <span className="text-[13.5px] font-semibold text-ink-900 dark:text-slate-100 truncate" title={projectName}>{projectName}</span>
           <IconChevronDown width={14} height={14} className="text-ink-400 dark:text-slate-500" />
         </button>
       </div>
@@ -51,10 +63,10 @@ export default function Sidebar({
           onClick={() => onSelectView?.('execution')}
         />
         <NavItem
-          icon={<IconZap />}
-          label="Email Agent (SDK)"
-          active={activeView === 'email_sdk'}
-          onClick={() => onSelectView?.('email_sdk')}
+          icon={<IconMail />}
+          label="Email Agent"
+          active={activeView === 'email_agent'}
+          onClick={() => onSelectView?.('email_agent')}
         />
       </nav>
 

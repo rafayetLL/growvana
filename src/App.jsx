@@ -3,27 +3,23 @@ import Onboarding from './components/Onboarding.jsx';
 import ChatScreen from './components/ChatScreen.jsx';
 import AgentsScreen from './components/AgentsScreen.jsx';
 import EmailAgentBuilderScreen from './components/EmailAgentBuilderScreen.jsx';
-import EmailAgentSdkScreen from './components/EmailAgentSdkScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import { initChat } from './lib/api.js';
 import { subscribeProgress, buildWebhookRequest } from './lib/webhookBus.js';
 
 // Map sidebar slugs ↔ App view names. Sidebar emits 'foundations' |
-// 'execution' | 'email_sdk'; the App's view state uses 'foundations' |
-// 'agents' | 'email_agent' | 'email_sdk'. The first two collapse for
-// the sidebar (Execution = agents OR the email-agent detail view).
-function viewFromSidebar(slug, currentView) {
+// 'execution' | 'email_agent'; the App's view state uses the same three
+// values plus 'agents' (the agent-grid landing inside Execution).
+function viewFromSidebar(slug) {
   if (slug === 'foundations') return 'foundations';
-  if (slug === 'email_sdk') return 'email_sdk';
-  if (slug === 'execution') {
-    return currentView === 'email_agent' ? 'email_agent' : 'agents';
-  }
-  return currentView;
+  if (slug === 'email_agent') return 'email_agent';
+  if (slug === 'execution') return 'agents';
+  return 'foundations';
 }
 
 function sidebarFromView(view) {
   if (view === 'foundations') return 'foundations';
-  if (view === 'email_sdk') return 'email_sdk';
+  if (view === 'email_agent') return 'email_agent';
   return 'execution';
 }
 
@@ -33,14 +29,12 @@ function newThreadId() {
 }
 
 export default function App() {
-  const [stage, setStage] = useState('onboarding'); // 'onboarding' | 'chat' | 'sdk' | 'email_direct'
+  const [stage, setStage] = useState('onboarding'); // 'onboarding' | 'chat'
   const [initResult, setInitResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   // Map<stage, { at, message }> populated from relay SSE events while init runs.
   const [initProgress, setInitProgress] = useState({});
-  // Direct-jump thread_id for the email builder shortcut. Bypasses init.
-  const [directThreadId, setDirectThreadId] = useState('');
 
   // Post-onboarding navigation. Three views share the same thread:
   //   'foundations' — Phase-1 chat (ChatScreen)
@@ -53,6 +47,17 @@ export default function App() {
   // non-empty, both screens use the trimmed value as their thread_id
   // for new API calls.
   const [overrideThreadId, setOverrideThreadId] = useState('');
+
+  // Reset everything back to onboarding ("New project" button in Sidebar).
+  function handleNewProject() {
+    setStage('onboarding');
+    setInitResult(null);
+    setLoading(false);
+    setError(null);
+    setInitProgress({});
+    setOverrideThreadId('');
+    setView('foundations');
+  }
 
   async function start({ company_url, file_urls }) {
     setLoading(true);
@@ -101,12 +106,13 @@ export default function App() {
   if (stage === 'chat' && initResult) {
     const effectiveThreadId =
       overrideThreadId.trim() || initResult.thread_id;
+    const projectName = initResult.company_name || 'Untitled project';
 
-    // All four views stay mounted; only one is visible at a time. This
+    // All views stay mounted; only one is visible at a time. This
     // preserves component state (chat history, latest generation,
     // gap questions, in-flight streams, etc.) when the user toggles
-    // between Foundations / Execution / Email Agent (SDK).
-    const handleSidebar = (slug) => setView(viewFromSidebar(slug, view));
+    // between Foundations / Execution / Email Agent.
+    const handleSidebar = (slug) => setView(viewFromSidebar(slug));
 
     return (
       <>
@@ -115,12 +121,16 @@ export default function App() {
             initResult={initResult}
             activeView="foundations"
             onSelectView={handleSidebar}
+            projectName={projectName}
+            onNewProject={handleNewProject}
           />
         </div>
         <div className={view === 'agents' ? 'h-screen flex bg-ink-50 dark:bg-slate-950' : 'hidden'}>
           <Sidebar
+            projectName={projectName}
             activeView={sidebarFromView(view)}
             onSelectView={handleSidebar}
+            onNewProject={handleNewProject}
           />
           <AgentsScreen
             onSelectAgent={(id) => {
@@ -131,59 +141,18 @@ export default function App() {
         <div className={view === 'email_agent' ? 'h-screen' : 'hidden'}>
           <EmailAgentBuilderScreen
             threadId={initResult.thread_id}
+            isActive={view === 'email_agent'}
             onBack={() => setView('agents')}
             onGoToFoundations={() => setView('foundations')}
             onSelectView={handleSidebar}
             overrideThreadId={overrideThreadId}
             setOverrideThreadId={setOverrideThreadId}
             effectiveThreadId={effectiveThreadId}
-          />
-        </div>
-        <div className={view === 'email_sdk' ? 'h-screen' : 'hidden'}>
-          <EmailAgentSdkScreen
-            activeView={sidebarFromView(view)}
-            onSelectView={handleSidebar}
+            projectName={projectName}
+            onNewProject={handleNewProject}
           />
         </div>
       </>
-    );
-  }
-
-  // Pre-onboarding shortcut: jump straight into the SDK agent without
-  // running the phase-1 blueprint pipeline. The SDK agent is fully
-  // independent of `initResult`, so we just render the screen with a
-  // sidebar that hands clicks on Foundations/Execution back to the
-  // onboarding screen (those views need init).
-  if (stage === 'sdk') {
-    return (
-      <EmailAgentSdkScreen
-        activeView="email_sdk"
-        onSelectView={(slug) => {
-          if (slug === 'email_sdk') return;
-          setStage('onboarding');
-        }}
-      />
-    );
-  }
-
-  // Pre-onboarding shortcut: jump straight into the Email Campaign
-  // Builder with a user-supplied thread_id. Skips the foundation init;
-  // the builder calls `/email-agent/init` itself, which will surface a
-  // BlueprintMissingError if the thread has no blueprint yet.
-  if (stage === 'email_direct') {
-    return (
-      <EmailAgentBuilderScreen
-        threadId={directThreadId}
-        onBack={() => setStage('onboarding')}
-        onGoToFoundations={() => setStage('onboarding')}
-        onSelectView={(slug) => {
-          if (slug === 'execution') return;
-          setStage('onboarding');
-        }}
-        overrideThreadId={directThreadId}
-        setOverrideThreadId={setDirectThreadId}
-        effectiveThreadId={directThreadId}
-      />
     );
   }
 
@@ -194,11 +163,6 @@ export default function App() {
       progress={initProgress}
       onContinue={start}
       onSkip={start}
-      onOpenSdk={() => setStage('sdk')}
-      onOpenEmailDirect={(threadId) => {
-        setDirectThreadId(threadId);
-        setStage('email_direct');
-      }}
     />
   );
 }

@@ -67,14 +67,9 @@ function ProgressStep({ label, done, message }) {
   );
 }
 
-export default function Onboarding({ onContinue, onSkip, onOpenSdk, onOpenEmailDirect, loading, error, progress = {} }) {
+export default function Onboarding({ onContinue, onSkip, loading, error, progress = {} }) {
   const [companyUrl, setCompanyUrl] = useState('');
   const [fileUrls, setFileUrls] = useState(['']);
-  // Direct-jump-to-email-agent shortcut: testing-only path that bypasses
-  // onboarding/foundation init and goes straight to the email builder
-  // with a user-supplied thread_id.
-  const [showDirectInput, setShowDirectInput] = useState(false);
-  const [directThreadId, setDirectThreadId] = useState('');
   // Captured at submit so the progress stepper shows the right steps even
   // after the user-visible form state has been reset.
   const [submittedHasFiles, setSubmittedHasFiles] = useState(false);
@@ -117,80 +112,6 @@ export default function Onboarding({ onContinue, onSkip, onOpenSdk, onOpenEmailD
       <header className="h-14 bg-white dark:bg-slate-900 border-b border-ink-200 dark:border-slate-800 flex items-center justify-between px-6">
         <Logo />
         <div className="flex items-center gap-3">
-          <div className="text-[13px] text-ink-500 dark:text-slate-400">Setup: Knowledge Base</div>
-          {onOpenSdk && (
-            <button
-              type="button"
-              onClick={onOpenSdk}
-              className="text-[12px] px-3 py-1.5 rounded-md border border-ink-200 dark:border-slate-700 text-ink-600 dark:text-slate-300 hover:bg-ink-50 dark:hover:bg-slate-800 transition"
-            >
-              Email Agent (SDK) →
-            </button>
-          )}
-          {onOpenEmailDirect && (
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setShowDirectInput((v) => !v)}
-                className={[
-                  'text-[12px] px-3 py-1.5 rounded-md border transition',
-                  showDirectInput
-                    ? 'bg-brand-500 border-brand-500 text-white'
-                    : 'border-ink-200 dark:border-slate-700 text-ink-600 dark:text-slate-300 hover:bg-ink-50 dark:hover:bg-slate-800',
-                ].join(' ')}
-                aria-expanded={showDirectInput}
-              >
-                Email Agent (Direct) →
-              </button>
-              {showDirectInput && (
-                <div className="absolute right-0 top-[calc(100%+6px)] z-20 w-[300px] bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-700 rounded-lg shadow-card p-3">
-                  <label className="block text-[11px] tracking-wider uppercase font-semibold text-ink-400 dark:text-slate-500 mb-1.5">
-                    Thread ID
-                  </label>
-                  <input
-                    type="text"
-                    autoFocus
-                    value={directThreadId}
-                    onChange={(e) => setDirectThreadId(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && directThreadId.trim()) {
-                        e.preventDefault();
-                        onOpenEmailDirect(directThreadId.trim());
-                        setShowDirectInput(false);
-                      } else if (e.key === 'Escape') {
-                        setShowDirectInput(false);
-                      }
-                    }}
-                    placeholder="paste existing thread_id…"
-                    className="w-full bg-white dark:bg-slate-800 border border-ink-200 dark:border-slate-600 rounded-md px-2.5 py-1.5 text-[12.5px] text-ink-900 dark:text-slate-100 placeholder:text-ink-400 dark:placeholder:text-slate-500 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 dark:focus:ring-brand-500/20"
-                  />
-                  <div className="mt-1.5 text-[11px] text-ink-400 dark:text-slate-500 leading-snug">
-                    Skips onboarding and jumps straight to the Email Campaign Builder. The thread must already have a blueprint.
-                  </div>
-                  <div className="mt-2 flex items-center justify-end gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setShowDirectInput(false)}
-                      className="text-[12px] px-2 py-1 rounded-md text-ink-500 dark:text-slate-400 hover:bg-ink-50 dark:hover:bg-slate-800"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!directThreadId.trim()}
-                      onClick={() => {
-                        onOpenEmailDirect(directThreadId.trim());
-                        setShowDirectInput(false);
-                      }}
-                      className="text-[12px] px-2.5 py-1 rounded-md bg-brand-500 text-white hover:bg-brand-600 disabled:bg-ink-200 dark:disabled:bg-slate-700 disabled:text-ink-400 dark:disabled:text-slate-500 transition"
-                    >
-                      Open
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
           <button
             type="button"
             onClick={toggleTheme}

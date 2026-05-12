@@ -36,7 +36,7 @@ function deriveMilestoneStatus(key, markdown, pendingApproval, acceptedHistory, 
  *  - milestoneMarkdown: draft markdown per milestone key
  *  - pendingApproval / acceptedHistory: sets used to derive per-milestone status
  */
-export default function ChatScreen({ initResult, activeView = 'foundations', onSelectView }) {
+export default function ChatScreen({ initResult, activeView = 'foundations', onSelectView, projectName, onNewProject }) {
   const threadId = initResult.thread_id;
   const companyName = initResult.company_name;
   // One random task_id per ChatScreen mount; reused across all webhook
@@ -383,9 +383,11 @@ export default function ChatScreen({ initResult, activeView = 'foundations', onS
   return (
     <div className="h-screen flex bg-ink-50 dark:bg-slate-950">
       <Sidebar
+        projectName={projectName || companyName}
         foundationPercent={overallProgress}
         activeView={activeView}
         onSelectView={onSelectView}
+        onNewProject={onNewProject}
       />
 
       <div className="flex-1 relative flex flex-col bg-white dark:bg-slate-900 min-w-0">

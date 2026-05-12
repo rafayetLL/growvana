@@ -82,11 +82,14 @@ export default function EmailAgentBuilderScreen({
   overrideThreadId,
   setOverrideThreadId,
   effectiveThreadId,
+  projectName,
+  onNewProject,
+  isActive = true,
 }) {
   const taskIdRef = useRef(newTaskId());
   const taskId = taskIdRef.current;
 
-  const [initLoading, setInitLoading] = useState(true);
+  const [initLoading, setInitLoading] = useState(false);
   const [initError, setInitError] = useState(null);
   const [blueprintMissing, setBlueprintMissing] = useState(false);
 
@@ -121,14 +124,20 @@ export default function EmailAgentBuilderScreen({
   // fires twice on mount.
   const initedThreadRef = useRef(null);
 
-  // Auto-init on mount: mirror the foundation /chat/init pattern. The
-  // backend's /email-agent/init blocks until the gap-analysis node has
-  // produced 3–7 questions to inline as a GapQuestions card. Use the
-  // foundations-side `threadId` (= initResult.thread_id) — NOT the
-  // override-aware `effectiveThreadId` — because the email-init endpoint
-  // looks up phase-1 deliverables at `phase_1::<thread_id>`, which were
-  // written under the same `initResult.thread_id` that ChatScreen uses.
+  // Init when the user actually enters this view (isActive=true).
+  // We can't init on mount: this screen is rendered (hidden) the moment
+  // the chat stage starts, BEFORE phase-1 has drafted brand_bible /
+  // buyer_personas. Firing /email-agent/init then would 400 with
+  // BrandContextMissing and the stale error would stick because the
+  // initedThreadRef guard prevents retries.
+  //
+  // Use the foundations-side `threadId` (= initResult.thread_id) — NOT
+  // the override-aware `effectiveThreadId` — because the email-init
+  // endpoint looks up phase-1 deliverables at `phase_1::<thread_id>`,
+  // which were written under the same `initResult.thread_id` that
+  // ChatScreen uses.
   useEffect(() => {
+    if (!isActive) return;
     if (!threadId) return;
     if (initedThreadRef.current === threadId) return;
     initedThreadRef.current = threadId;
@@ -156,7 +165,7 @@ export default function EmailAgentBuilderScreen({
         if (!stillCurrent()) return;
         setInitLoading(false);
       });
-  }, [threadId]);
+  }, [threadId, isActive]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -259,9 +268,11 @@ export default function EmailAgentBuilderScreen({
   return (
     <div className="h-screen flex bg-cream-100 dark:bg-slate-950">
       <Sidebar
-        foundationPercent={0}
-        activeView="execution"
+        projectName={projectName}
+        foundationPercent={100}
+        activeView="email_agent"
         onSelectView={onSelectView}
+        onNewProject={onNewProject}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -409,28 +420,40 @@ export default function EmailAgentBuilderScreen({
 
 function BuilderHeader({ onBack, activeTab }) {
   return (
-    <header className="h-14 px-6 flex items-center gap-3 border-b border-botanical-line dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0">
-      <button
-        type="button"
-        onClick={onBack}
-        className="inline-flex items-center gap-1.5 text-[13px] text-botanical-text2 dark:text-slate-400 hover:text-forest-900 dark:hover:text-slate-100 transition"
-      >
-        <IconArrowLeft width={14} height={14} /> Agents
-      </button>
-      <div className="h-7 w-px bg-botanical-line dark:bg-slate-700" />
-      <div className="h-9 w-9 rounded-xl bg-moss-100 dark:bg-moss-500/15 grid place-items-center text-moss-700 dark:text-moss-400">
-        <IconMail width={18} height={18} />
-      </div>
-      <div className="leading-tight">
-        <div className="font-display text-[18px] font-semibold text-forest-900 dark:text-slate-100">
-          Email Campaign Builder
+    <header className="px-6 pt-3 border-b border-botanical-line dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0">
+      <div className="flex items-center gap-3">
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex items-center gap-1.5 text-[13px] text-botanical-text2 dark:text-slate-400 hover:text-forest-900 dark:hover:text-slate-100 transition"
+          >
+            <IconArrowLeft width={14} height={14} /> Agents
+          </button>
+        )}
+        {onBack && <div className="h-7 w-px bg-botanical-line dark:bg-slate-700" />}
+        <div className="h-9 w-9 rounded-xl bg-moss-100 dark:bg-moss-500/15 grid place-items-center text-moss-700 dark:text-moss-400">
+          <IconMail width={18} height={18} />
         </div>
-        <div className="text-[11.5px] text-botanical-text3 dark:text-slate-400">
-          Brief → plan → copy → designed email · all in one thread
+        <div className="leading-tight">
+          <div className="font-display text-[18px] font-semibold text-forest-900 dark:text-slate-100">
+            Email Agent
+          </div>
+          <div className="text-[11.5px] text-botanical-text3 dark:text-slate-400">
+            Brief → plan → copy → designed email · all in one thread
+          </div>
+        </div>
+        <div className="ml-auto text-[11px] tracking-wider uppercase font-semibold text-botanical-text3 dark:text-slate-500">
+          {TABS.find((t) => t.id === activeTab)?.hint}
         </div>
       </div>
-      <div className="ml-auto text-[11px] tracking-wider uppercase font-semibold text-botanical-text3 dark:text-slate-500">
-        {TABS.find((t) => t.id === activeTab)?.hint}
+      <div className="mt-2 flex items-center gap-1">
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 -mb-px rounded-t-md text-[12.5px] font-semibold text-moss-700 dark:text-moss-400 border border-b-transparent border-botanical-line dark:border-slate-700 bg-white dark:bg-slate-900"
+        >
+          <IconMail width={13} height={13} /> Campaign Builder
+        </button>
       </div>
     </header>
   );
