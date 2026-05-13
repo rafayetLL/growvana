@@ -24,25 +24,31 @@
 //       the chosen subject variant's `preview_text` and is rendered
 //       separately in the UI. `step_number` is omitted (or 0) for a
 //       single email; present (1-indexed) for sequence steps.
-//   - { type: 'done', thread_id, email_plan, generated_kind,
-//                     single, sequence, segmentation_strategy, warnings,
-//                     generated_images }
+//   - { type: 'done', thread_id, email_plan, content, html }
 //       The chat reply is NOT on this frame — the frontend assembles it
 //       live from the `ai_message_token` stream emitted during the
 //       orchestrator's pass.
-//       `generated_kind` is 'single' | 'sequence' | null (conversational).
-//       `single` / `sequence` carry the full SingleEmail / Sequence payload
-//       — including `body_html` (with `{{TOKEN}}` placeholders LITERAL),
-//       `placeholders` (regex-extracted token list), `ctas` (list of
-//       CtaSlot {name, label_token, href_token, variants} — backend ships
-//       the FULL braced label/href tokens so the frontend never has to
-//       concatenate `CTA_<NAME>_<suffix>`), `cta_ab_tests` (CtaAbTest
-//       entries keyed by slot_name).
-//       `generated_images` is a `{ "{{IMAGE_<NAME>}}": data_uri }` map
-//       written by the `generate_email_images` tool — keyed by the FULL
-//       braced placeholder string, so the frontend substitutes via direct
-//       `replaceAll(token, dataUri)` with no name-prefix surgery.
-//       Backend never substitutes them.
+//
+//       Each of `email_plan`, `content`, `html` is ONLY populated when
+//       that artifact was actually produced THIS turn. A null means the
+//       corresponding node didn't run — the frontend should PRESERVE its
+//       prior local snapshot (so a content-only revision leaves the
+//       design tab's HTML intact, and a pure conversational turn doesn't
+//       clobber anything).
+//
+//       `email_plan` — full EmailPlan dict from the CMO, or null.
+//       `content`   — { kind: 'single'|'sequence', single, sequence } | null
+//                     `single` is a copy-only SingleEmail dict (subject_lines,
+//                     body, ctas, ab_tests, placeholders — NO email_html).
+//                     `sequence` is a list of copy-only EmailStep dicts.
+//       `html`      — { kind: 'single'|'sequence', single, sequence } | null
+//                     `single` is the raw HTML string (or null on sequence
+//                     kind). `sequence` is a list of {step_number, email_html}
+//                     entries (or null on single kind).
+//
+//       `{{IMAGE_<NAME>}}` tokens in `email_html` are LITERAL and reference
+//       user-uploaded `email_assets`; the frontend resolves them at render
+//       time from its own upload state.
 //   - { type: 'error', status, code, message }
 //       Structured error frame (Timeout Error / GrowvanaException class /
 //       Unknown Error). Includes the blueprint-missing message when the
@@ -50,8 +56,7 @@
 //
 // Structured email blocks (metadata, subject_lines, body, ctas, cta_ab_tests,
 // subject_line_ab_test, segmentation_strategy, warnings, sequence_metadata,
-// step_metadata) AND the slim `email.images` event (count + slot names
-// only — no URIs) do NOT come over this stream — they arrive via the
+// step_metadata) do NOT come over this stream — they arrive via the
 // webhook relay. Subscribe with `subscribeProgress(thread_id)`.
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
@@ -61,12 +66,18 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL;
  * Returns { thread_id, ai_message, questions: [{gap, question, options}] }.
  * Mirrors the foundation phase's /chat/init — kicks off email-side gap
  * analysis, returns 3–7 questions for the user to answer inline.
+ *
+ * `thread_id` is the email-side identifier the agent persists under.
+ * `foundation_thread_id` is the (possibly different) phase-1 thread whose
+ * checkpoint we pull brand_bible + buyer_personas from. Pass the SAME value
+ * when foundation and email share a thread; pass a different one when they
+ * were created independently.
  */
-export async function initEmailAgent({ thread_id }) {
+export async function initEmailAgent({ thread_id, foundation_thread_id }) {
   const res = await fetch(`${API_BASE}/email-agent/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ thread_id }),
+    body: JSON.stringify({ thread_id, foundation_thread_id }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -108,9 +119,11 @@ export async function* streamEmailAgent({
   const body = { email_request: { thread_id } };
   if (user_message !== undefined) body.email_request.user_message = user_message;
   if (gap_answers !== undefined) body.email_request.gap_answers = gap_answers;
-  // `email_assets` is the persisted-across-turns image list. Backend replaces
-  // the stored list with whatever we send on this turn; sending undefined or
-  // omitting leaves the previously persisted list in place.
+  // `email_assets` carries ONLY assets uploaded THIS turn. The backend's
+  // `merge_email_assets` reducer accumulates them onto its persisted list,
+  // and `cmo_email_assets` is set from the same fresh list so the CMO sees
+  // image bytes only on the upload turn. Subsequent turns omit this field;
+  // backend state already has the prior bytes.
   if (email_assets !== undefined && email_assets.length > 0) {
     body.email_request.email_assets = email_assets;
   }

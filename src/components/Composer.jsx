@@ -63,7 +63,15 @@ export default function Composer({
   function submit() {
     const v = value.trim();
     if (!v || disabled) return;
-    onSend(v, attachments.length > 0 ? attachments.slice() : undefined);
+    // Pass freshAssets (only assets added in THIS turn) to the parent so
+    // it can ship them in the request body as "fresh-this-turn". Prior
+    // turns' assets stay in the parent's full emailAssets list — needed
+    // for design-canvas placeholder substitution — but they are NOT re-sent.
+    onSend(
+      v,
+      attachments.length > 0 ? attachments.slice() : undefined,
+      freshAssets.length > 0 ? freshAssets.slice() : undefined,
+    );
     setValue('');
     setAttachments([]);
     setShowAttach(false);

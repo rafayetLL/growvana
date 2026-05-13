@@ -106,13 +106,15 @@ export default function EmailAgentBuilderScreen({
   const [typing, setTyping] = useState(false);
   const [turnError, setTurnError] = useState(null);
 
-  // Latest committed generation. The done frame carries the authoritative
-  // payloads — we replace the snapshot wholesale every time.
+  // Latest committed generation. The done frame ships email_plan / content /
+  // html each only when produced THIS turn — we PRESERVE prior values when
+  // a key arrives null, so e.g. a content-only revision leaves the previously
+  // rendered HTML on the design tab.
+  //   latestContent: { kind, single, sequence }  (copy-only, no email_html)
+  //   latestHtml:    { kind, single (string), sequence ([{step_number, email_html}]) }
   const [latestPlan, setLatestPlan] = useState(null);
-  const [latestKind, setLatestKind] = useState(null);
-  const [latestSingle, setLatestSingle] = useState(null);
-  const [latestSequence, setLatestSequence] = useState(null);
-  const [latestImages, setLatestImages] = useState({});
+  const [latestContent, setLatestContent] = useState(null);
+  const [latestHtml, setLatestHtml] = useState(null);
 
   const [activeTab, setActiveTab] = useState('strategy');
   // Email image assets: [{ name, url, alt_text? }]. Mirrors the backend's
@@ -172,7 +174,10 @@ export default function EmailAgentBuilderScreen({
     setInitLoading(true);
     setInitError(null);
     setBlueprintMissing(false);
-    initEmailAgent({ thread_id: thisThread })
+    initEmailAgent({
+      thread_id: thisThread,
+      foundation_thread_id: thisThread,
+    })
       .then((res) => {
         if (!stillCurrent()) return;
         const intro = res?.ai_message || '';
@@ -202,7 +207,7 @@ export default function EmailAgentBuilderScreen({
     });
   }, [messages, gapQuestions, streamingText, typing]);
 
-  async function runStream({ user_message, gap_answers }) {
+  async function runStream({ user_message, gap_answers, fresh_assets }) {
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -235,7 +240,12 @@ export default function EmailAgentBuilderScreen({
         thread_id: threadId,
         user_message,
         gap_answers,
-        email_assets: emailAssets,
+        // Ship ONLY assets uploaded this turn. The full accumulated list
+        // lives on `emailAssets` for design-canvas placeholder resolution,
+        // but the backend already has prior assets in its state — re-sending
+        // them would make build_attachment_blocks classify them as fresh
+        // and re-feed image bytes to the CMO every turn.
+        email_assets: fresh_assets,
         webhook_request,
         signal: controller.signal,
       })) {
@@ -262,21 +272,18 @@ export default function EmailAgentBuilderScreen({
               { role: 'assistant', content: text, time: Date.now() },
             ]);
           }
+          // Backend only ships these when produced THIS turn; null means
+          // "no new value, keep what we have". So we update only on truthy.
           if (evt.email_plan) {
             const newPlanKey = JSON.stringify(evt.email_plan);
             if (newPlanKey !== priorPlanKey) firedPlan = true;
             setLatestPlan(evt.email_plan);
           }
-          if (evt.generated_kind) {
-            setLatestKind(evt.generated_kind);
-            if (evt.generated_kind === 'single') {
-              setLatestSingle(evt.single || null);
-              setLatestSequence(null);
-            } else if (evt.generated_kind === 'sequence') {
-              setLatestSequence(evt.sequence || null);
-              setLatestSingle(null);
-            }
-            setLatestImages(evt.generated_images || {});
+          if (evt.content) {
+            setLatestContent(evt.content);
+          }
+          if (evt.html) {
+            setLatestHtml(evt.html);
           }
           // Auto-switch to the LATEST stage that produced output this
           // turn (design > content > strategy). Conversational turns
@@ -304,9 +311,9 @@ export default function EmailAgentBuilderScreen({
     }
   }
 
-  function handleSendText(text) {
+  function handleSendText(text, _attachments, freshAssets) {
     setMessages((prev) => [...prev, { role: 'user', content: text, time: Date.now() }]);
-    runStream({ user_message: text });
+    runStream({ user_message: text, fresh_assets: freshAssets });
   }
 
   function handleSubmitGapAnswers(answers) {
@@ -341,8 +348,8 @@ export default function EmailAgentBuilderScreen({
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           hasPlan={!!latestPlan}
-          hasContent={!!(latestSingle || latestSequence)}
-          hasHtml={hasAnyHtml(latestKind, latestSingle, latestSequence)}
+          hasContent={!!(latestContent?.single || latestContent?.sequence)}
+          hasHtml={hasAnyHtml(latestHtml?.kind, latestHtml?.single, latestHtml?.sequence)}
         />
 
         <div className="flex-1 flex min-h-0">
@@ -431,8 +438,8 @@ export default function EmailAgentBuilderScreen({
               activeTab={activeTab}
               setActiveTab={setActiveTab}
               hasPlan={!!latestPlan}
-              hasContent={!!(latestSingle || latestSequence)}
-              hasHtml={hasAnyHtml(latestKind, latestSingle, latestSequence)}
+              hasContent={!!(latestContent?.single || latestContent?.sequence)}
+              hasHtml={hasAnyHtml(latestHtml?.kind, latestHtml?.single, latestHtml?.sequence)}
             />
 
             <div className="flex-1 overflow-y-auto thin-scroll">
@@ -441,18 +448,17 @@ export default function EmailAgentBuilderScreen({
               )}
               {activeTab === 'content' && (
                 <ContentCanvas
-                  kind={latestKind}
-                  single={latestSingle}
-                  sequence={latestSequence}
+                  kind={latestContent?.kind}
+                  single={latestContent?.single}
+                  sequence={latestContent?.sequence}
                   plan={latestPlan}
                 />
               )}
               {activeTab === 'design' && (
                 <DesignCanvas
-                  kind={latestKind}
-                  single={latestSingle}
-                  sequence={latestSequence}
-                  images={latestImages}
+                  kind={latestHtml?.kind}
+                  single={latestHtml?.single}
+                  sequence={latestHtml?.sequence}
                   emailAssets={emailAssets}
                 />
               )}
@@ -1170,22 +1176,25 @@ function Block({ title, children }) {
 // Design tab — render body_html in an iframe
 // =============================================================
 
+// `single` here is the raw HTML string (or null), not an EmailOutput object —
+// the done-frame's `html.single` is a string. Sequence entries still carry
+// `{step_number, email_html}` so their email_html field exists per-step.
 function hasAnyHtml(kind, single, sequence) {
-  if (kind === 'single') return !!single?.email_html;
+  if (kind === 'single') return typeof single === 'string' && single.length > 0;
   if (kind === 'sequence') {
     return !!(sequence || []).some((s) => s.email_html);
   }
   return false;
 }
 
-function DesignCanvas({ kind, single, sequence, images, emailAssets }) {
+function DesignCanvas({ kind, single, sequence, emailAssets }) {
   const [viewport, setViewport] = useState('desktop');
   const [stepIdx, setStepIdx] = useState(0);
 
   const hasHtml = hasAnyHtml(kind, single, sequence);
 
   const html = useMemo(() => {
-    if (kind === 'single') return single?.email_html || '';
+    if (kind === 'single') return single || '';
     if (kind === 'sequence') {
       const flow = sequence || [];
       return flow[stepIdx]?.email_html || '';
@@ -1193,18 +1202,16 @@ function DesignCanvas({ kind, single, sequence, images, emailAssets }) {
     return '';
   }, [kind, single, sequence, stepIdx]);
 
-  // Merge map for {{<name>}} substitution: backend-emitted generated_images
-  // (tool output, keyed by FULL braced token) PLUS user-uploaded
-  // emailAssets (keyed by user-supplied `name` verbatim — we wrap it in
-  // {{ }} client-side, no `IMAGE_` or any other prefix added). User
-  // uploads win conflicts; they're the ones the user can see and curate.
+  // Map for {{<name>}} substitution: user-uploaded emailAssets keyed by
+  // the user-supplied `name` verbatim — we wrap it in {{ }} client-side,
+  // no `IMAGE_` or any other prefix added.
   const mergedImageMap = useMemo(() => {
-    const out = { ...(images || {}) };
+    const out = {};
     for (const a of emailAssets || []) {
       out[`{{${a.name}}}`] = a.url;
     }
     return out;
-  }, [images, emailAssets]);
+  }, [emailAssets]);
 
   const substituted = useMemo(
     () => substituteImageTokens(html, mergedImageMap),
