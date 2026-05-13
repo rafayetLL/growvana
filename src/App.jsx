@@ -184,7 +184,7 @@ export default function App() {
           <EmailAgentBuilderScreen
             threadId={initResult.thread_id}
             isActive={view === 'email_agent'}
-            onBack={() => setView('agents')}
+            onBack={handleNewProject}
             onGoToFoundations={() => setView('foundations')}
             onSelectView={handleSidebar}
             overrideThreadId={overrideThreadId}

@@ -221,6 +221,15 @@ export default function EmailAgentBuilderScreen({
     });
 
     let assistantText = '';
+    // Per-turn flags so we can auto-switch to the latest tab that
+    // actually produced output. `state.email_plan` PERSISTS across
+    // turns on the backend, so `evt.email_plan` alone can't tell us
+    // whether the CMO emitted a FRESH plan this turn — we diff the
+    // incoming payload against the current `latestPlan` to decide.
+    let firedContent = false;
+    let firedDesign = false;
+    let firedPlan = false;
+    const priorPlanKey = latestPlan ? JSON.stringify(latestPlan) : null;
     try {
       for await (const evt of streamEmailAgent({
         thread_id: threadId,
@@ -242,6 +251,8 @@ export default function EmailAgentBuilderScreen({
           // setter idempotent prevents React from re-rendering needlessly
           // and keeps the loader appearing exactly once per node per turn.
           const name = evt.name || (evt.type === 'email_content_drafting' ? 'email_content' : 'email_design');
+          if (name === 'email_content') firedContent = true;
+          if (name === 'email_design') firedDesign = true;
           setDraftingAgent((cur) => (cur === name ? cur : name));
         } else if (evt.type === 'done') {
           if (assistantText) {
@@ -252,11 +263,9 @@ export default function EmailAgentBuilderScreen({
             ]);
           }
           if (evt.email_plan) {
+            const newPlanKey = JSON.stringify(evt.email_plan);
+            if (newPlanKey !== priorPlanKey) firedPlan = true;
             setLatestPlan(evt.email_plan);
-            // Auto-jump to Strategy tab the first time a plan lands so the
-            // user sees what just happened. Subsequent done frames don't
-            // hijack focus.
-            setActiveTab((cur) => (latestPlan ? cur : 'strategy'));
           }
           if (evt.generated_kind) {
             setLatestKind(evt.generated_kind);
@@ -268,6 +277,16 @@ export default function EmailAgentBuilderScreen({
               setLatestSingle(null);
             }
             setLatestImages(evt.generated_images || {});
+          }
+          // Auto-switch to the LATEST stage that produced output this
+          // turn (design > content > strategy). Conversational turns
+          // (no drafting, no fresh plan) leave the active tab untouched.
+          if (firedDesign) {
+            setActiveTab('design');
+          } else if (firedContent) {
+            setActiveTab('content');
+          } else if (firedPlan) {
+            setActiveTab('strategy');
           }
         } else if (evt.type === 'error') {
           const m = evt.message || 'Error';
