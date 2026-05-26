@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Sidebar from './Sidebar.jsx';
@@ -7,7 +7,7 @@ import GapQuestions from './GapQuestions.jsx';
 import ThreadOverridePanel from './ThreadOverridePanel.jsx';
 import { ChatMessageItem } from './MessageRenderers.jsx';
 import { initEmailAgent, streamEmailAgent } from '../lib/emailAgentApi.js';
-import { buildWebhookRequest } from '../lib/webhookBus.js';
+import { buildWebhookRequest, subscribeProgress } from '../lib/webhookBus.js';
 import {
   IconArrowLeft,
   IconSparkle,
@@ -129,7 +129,14 @@ export default function EmailAgentBuilderScreen({
   // on `done`. The design node is a ReAct loop so the event re-fires per
   // re-entry — we dedupe by storing only the last `name` seen.
   const [draftingAgent, setDraftingAgent] = useState(null);
+  const [webhookToasts, setWebhookToasts] = useState([]);
   const [chatW, onSplitDown] = useSplit(460, 360, 720);
+
+  const pushToast = useCallback((msg) => {
+    const id = Date.now() + Math.random();
+    setWebhookToasts((prev) => [...prev.slice(-4), { id, text: msg }]);
+    setTimeout(() => setWebhookToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
+  }, []);
 
   const abortRef = useRef(null);
   const scrollRef = useRef(null);
@@ -225,12 +232,118 @@ export default function EmailAgentBuilderScreen({
       data: { thread_id: threadId },
     });
 
+    // Subscribe to webhook events for live incremental updates (plan
+    // sub-parts, content edits, design HTML) that arrive BEFORE the
+    // SSE `done` frame. The `done` frame is still authoritative — it
+    // overwrites anything the webhooks set — but the webhooks let the
+    // UI update tabs progressively as the backend commits each piece.
+    let webhookSub = null;
+    if (webhook_request) {
+      webhookSub = subscribeProgress(taskId, (whEvt) => {
+        if (whEvt.status !== 'success' || !whEvt.data) return;
+        const { stage, data } = whEvt;
+        if (whEvt.success_message) pushToast(whEvt.success_message);
+
+        // --- Plan granular webhooks ---
+        if (stage === 'email.plan.metadata') {
+          setLatestPlan((prev) => ({ ...(prev || {}), ...data }));
+          setActiveTab('strategy');
+        } else if (stage === 'email.plan.content_direction') {
+          setLatestPlan((prev) => {
+            if (!prev) return prev;
+            if (data.step_number != null) {
+              const seqPlan = prev.sequence_email_plan || { steps: [] };
+              const existing = seqPlan.steps || [];
+              const found = existing.some((s) => s.step_number === data.step_number);
+              const steps = found
+                ? existing.map((s) => s.step_number === data.step_number ? { ...s, content_direction: data.content_direction } : s)
+                : [...existing, { step_number: data.step_number, content_direction: data.content_direction }];
+              return { ...prev, sequence_email_plan: { ...seqPlan, steps } };
+            }
+            const sp = prev.single_email_plan || {};
+            return { ...prev, single_email_plan: { ...sp, content_direction: data.content_direction } };
+          });
+        } else if (stage === 'email.plan.design_direction') {
+          setLatestPlan((prev) => {
+            if (!prev) return prev;
+            if (data.step_number != null) {
+              const seqPlan = prev.sequence_email_plan || { steps: [] };
+              const existing = seqPlan.steps || [];
+              const found = existing.some((s) => s.step_number === data.step_number);
+              const steps = found
+                ? existing.map((s) => s.step_number === data.step_number ? { ...s, design_direction: data.design_direction } : s)
+                : [...existing, { step_number: data.step_number, design_direction: data.design_direction }];
+              return { ...prev, sequence_email_plan: { ...seqPlan, steps } };
+            }
+            const sp = prev.single_email_plan || {};
+            return { ...prev, single_email_plan: { ...sp, design_direction: data.design_direction } };
+          });
+        } else if (stage === 'email.plan.step.metadata') {
+          setLatestPlan((prev) => {
+            const seqPlan = (prev || {}).sequence_email_plan || { steps: [] };
+            const existing = seqPlan.steps || [];
+            const idx = existing.findIndex((s) => s.step_number === data.step_number);
+            const entry = { ...(idx >= 0 ? existing[idx] : {}), ...data };
+            const steps = idx >= 0
+              ? existing.map((s, i) => (i === idx ? entry : s))
+              : [...existing, entry];
+            return { ...prev, sequence_email_plan: { ...seqPlan, steps } };
+          });
+          setActiveTab('strategy');
+        } else if (stage === 'email.plan.step') {
+          setLatestPlan((prev) => {
+            const seqPlan = (prev || {}).sequence_email_plan || { steps: [] };
+            const existing = seqPlan.steps || [];
+            const idx = existing.findIndex((s) => s.step_number === data.step_number);
+            const steps = idx >= 0
+              ? existing.map((s, i) => (i === idx ? { ...s, ...data } : s))
+              : [...existing, data];
+            return { ...prev, sequence_email_plan: { ...seqPlan, steps } };
+          });
+
+        // --- Content webhooks (streaming + edits) ---
+        } else if (
+          stage === 'email.subject_lines' ||
+          stage === 'email.body' ||
+          stage === 'email.ctas' ||
+          stage === 'email.subject_line_ab_test' ||
+          stage === 'email.cta_ab_tests' ||
+          stage === 'email.placeholders'
+        ) {
+          setLatestContent((prev) => {
+            const field =
+              stage === 'email.subject_lines' ? 'subject_lines'
+              : stage === 'email.body' ? 'body'
+              : stage === 'email.ctas' ? 'ctas'
+              : stage === 'email.subject_line_ab_test' ? 'subject_line_ab_test'
+              : stage === 'email.cta_ab_tests' ? 'cta_ab_tests'
+              : 'placeholders';
+            const value = data[field];
+            if (value === undefined) return prev;
+
+            if (data.step_number != null) {
+              const base = prev || { kind: 'sequence', single: null, sequence: [] };
+              const seq = base.sequence || [];
+              const idx = seq.findIndex((s) => s.step_number === data.step_number);
+              const updatedSeq = idx >= 0
+                ? seq.map((s, i) => (i === idx ? { ...s, [field]: value } : s))
+                : [...seq, { step_number: data.step_number, [field]: value }];
+              return { ...base, sequence: updatedSeq };
+            }
+            const base = prev || { kind: 'single', single: {}, sequence: null };
+            return { ...base, single: { ...(base.single || {}), [field]: value } };
+          });
+          setActiveTab('content');
+
+        // --- Design HTML webhook ---
+        } else if (stage === 'email.html') {
+          setLatestHtml(data);
+          setActiveTab('design');
+        }
+      });
+    }
+
     let assistantText = '';
-    // Per-turn flags so we can auto-switch to the latest tab that
-    // actually produced output. `state.email_plan` PERSISTS across
-    // turns on the backend, so `evt.email_plan` alone can't tell us
-    // whether the CMO emitted a FRESH plan this turn — we diff the
-    // incoming payload against the current `latestPlan` to decide.
     let firedContent = false;
     let firedDesign = false;
     let firedPlan = false;
@@ -240,11 +353,6 @@ export default function EmailAgentBuilderScreen({
         thread_id: threadId,
         user_message,
         gap_answers,
-        // Ship ONLY assets uploaded this turn. The full accumulated list
-        // lives on `emailAssets` for design-canvas placeholder resolution,
-        // but the backend already has prior assets in its state — re-sending
-        // them would make build_attachment_blocks classify them as fresh
-        // and re-feed image bytes to the CMO every turn.
         email_assets: fresh_assets,
         webhook_request,
         signal: controller.signal,
@@ -256,10 +364,6 @@ export default function EmailAgentBuilderScreen({
           evt.type === 'email_content_drafting' ||
           evt.type === 'email_design_drafting'
         ) {
-          // Dedupe: only flip state when the active node changes. Design
-          // re-fires its event on every ReAct loop re-entry; keeping the
-          // setter idempotent prevents React from re-rendering needlessly
-          // and keeps the loader appearing exactly once per node per turn.
           const name = evt.name || (evt.type === 'email_content_drafting' ? 'email_content' : 'email_design');
           if (name === 'email_content') firedContent = true;
           if (name === 'email_design') firedDesign = true;
@@ -272,8 +376,6 @@ export default function EmailAgentBuilderScreen({
               { role: 'assistant', content: text, time: Date.now() },
             ]);
           }
-          // Backend only ships these when produced THIS turn; null means
-          // "no new value, keep what we have". So we update only on truthy.
           if (evt.email_plan) {
             const newPlanKey = JSON.stringify(evt.email_plan);
             if (newPlanKey !== priorPlanKey) firedPlan = true;
@@ -285,9 +387,6 @@ export default function EmailAgentBuilderScreen({
           if (evt.html) {
             setLatestHtml(evt.html);
           }
-          // Auto-switch to the LATEST stage that produced output this
-          // turn (design > content > strategy). Conversational turns
-          // (no drafting, no fresh plan) leave the active tab untouched.
           if (firedDesign) {
             setActiveTab('design');
           } else if (firedContent) {
@@ -308,6 +407,7 @@ export default function EmailAgentBuilderScreen({
       setStreamingText(null);
       setDraftingAgent(null);
       abortRef.current = null;
+      webhookSub?.close();
     }
   }
 
@@ -477,6 +577,19 @@ export default function EmailAgentBuilderScreen({
           </div>
         </div>
       </div>
+
+      {webhookToasts.length > 0 && (
+        <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none">
+          {webhookToasts.map((t) => (
+            <div
+              key={t.id}
+              className="pointer-events-auto bg-white dark:bg-slate-800 border border-ink-200 dark:border-slate-700 shadow-lg rounded-lg px-4 py-2.5 text-[12.5px] text-ink-700 dark:text-slate-200 animate-[fadeInUp_0.25s_ease-out]"
+            >
+              {t.text}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

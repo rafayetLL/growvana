@@ -158,6 +158,16 @@ export default function Onboarding({ onContinue, onSkip, loading, error, progres
                     done={!!progress.url_context_analysis}
                     message={progress.url_context_analysis?.message}
                   />
+                  <ProgressStep
+                    label="Capturing brand visuals"
+                    done={!!progress.site_capture}
+                    message={progress.site_capture?.message}
+                  />
+                  <ProgressStep
+                    label="Analyzing design identity"
+                    done={!!progress.design_identity}
+                    message={progress.design_identity?.message}
+                  />
                   {submittedHasFiles && (
                     <ProgressStep
                       label="Analyzing documents"
@@ -167,8 +177,6 @@ export default function Onboarding({ onContinue, onSkip, loading, error, progres
                   )}
                   <ProgressStep
                     label="Generating questions"
-                    // No backend webhook for gap_analysis — shows a spinner
-                    // until `loading` flips off (which unmounts this view).
                     done={false}
                   />
                 </ol>
