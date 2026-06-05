@@ -27,6 +27,18 @@ const AGENTS = [
     enabled: true,
   },
   {
+    id: 'meta_ad_agent',
+    name: 'Meta Ad Agent',
+    description: 'Diagnose Facebook & Instagram ads, tune live campaigns, and brief new ones',
+    icon: IconTarget,
+    iconBg: 'bg-blue-50 dark:bg-blue-500/10',
+    iconColor: 'text-blue-500 dark:text-blue-400',
+    status: 'active',
+    statKey: 'Ad Accounts',
+    statValue: 1,
+    enabled: true,
+  },
+  {
     id: 'social_media',
     name: 'Social Media Agent',
     description: 'Content creation and scheduling across all platforms',

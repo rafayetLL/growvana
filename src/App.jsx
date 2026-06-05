@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
+import CampaignChooser from './components/CampaignChooser.jsx';
 import EmailLanding from './components/EmailLanding.jsx';
 import Onboarding from './components/Onboarding.jsx';
 import ChatScreen from './components/ChatScreen.jsx';
 import AgentsScreen from './components/AgentsScreen.jsx';
 import EmailAgentBuilderScreen from './components/EmailAgentBuilderScreen.jsx';
+import MetaAdAgentBuilderScreen from './components/MetaAdAgentBuilderScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import { initChat } from './lib/api.js';
 import { initEmailAgentWithPdf } from './lib/emailAgentApi.js';
@@ -19,6 +21,7 @@ const PDF_FLOW_PROJECT_NAME = 'Company Name';
 function viewFromSidebar(slug) {
   if (slug === 'foundations') return 'foundations';
   if (slug === 'email_agent') return 'email_agent';
+  if (slug === 'meta_ad_agent') return 'meta_ad_agent';
   if (slug === 'execution') return 'agents';
   return 'foundations';
 }
@@ -26,6 +29,7 @@ function viewFromSidebar(slug) {
 function sidebarFromView(view) {
   if (view === 'foundations') return 'foundations';
   if (view === 'email_agent') return 'email_agent';
+  if (view === 'meta_ad_agent') return 'meta_ad_agent';
   return 'execution';
 }
 
@@ -35,7 +39,15 @@ function newThreadId() {
 }
 
 export default function App() {
-  const [stage, setStage] = useState('landing'); // 'landing' | 'onboarding' | 'chat'
+  const [stage, setStage] = useState('landing'); // 'landing' | 'onboarding' | 'chat' | 'meta_ad'
+  // Which campaign type the user picked on the first screen.
+  //   null      → show the CampaignChooser
+  //   'email'   → the Email Campaign landing/flow
+  //   'meta_ad' → the standalone Meta Ad Agent (stage becomes 'meta_ad')
+  const [campaign, setCampaign] = useState(null);
+  // Thread id for the standalone Meta Ad flow (no email/foundation session
+  // backs it — the Meta Ad agent self-inits from ad-account creds / PDF).
+  const [metaThreadId, setMetaThreadId] = useState('');
   const [initResult, setInitResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -65,6 +77,8 @@ export default function App() {
   // Reset everything back to the landing page ("New project" button in Sidebar).
   function handleNewProject() {
     setStage('landing');
+    setCampaign(null);
+    setMetaThreadId('');
     setInitResult(null);
     setPreInitedEmail(null);
     setLoading(false);
@@ -72,6 +86,17 @@ export default function App() {
     setInitProgress({});
     setOverrideThreadId('');
     setView('foundations');
+  }
+
+  // CampaignChooser → route into the chosen flow.
+  function handlePickCampaign(type) {
+    if (type === 'meta_ad') {
+      setMetaThreadId(newThreadId());
+      setCampaign('meta_ad');
+      setStage('meta_ad');
+      return;
+    }
+    setCampaign('email'); // stays on the 'landing' stage → EmailLanding
   }
 
   async function startWithPdf(file) {
@@ -176,6 +201,7 @@ export default function App() {
             <AgentsScreen
               onSelectAgent={(id) => {
                 if (id === 'email_marketing') setView('email_agent');
+                if (id === 'meta_ad_agent') setView('meta_ad_agent');
               }}
             />
           </div>
@@ -196,7 +222,37 @@ export default function App() {
             hideFoundation={pdfFlow}
           />
         </div>
+        <div className={view === 'meta_ad_agent' ? 'h-screen' : 'hidden'}>
+          <MetaAdAgentBuilderScreen
+            threadId={initResult.thread_id}
+            isActive={view === 'meta_ad_agent'}
+            onBack={() => setView('agents')}
+            onSelectView={handleSidebar}
+            projectName={projectName}
+            onNewProject={handleNewProject}
+          />
+        </div>
       </>
+    );
+  }
+
+  // Standalone Meta Ad campaign — picked from the chooser, no email/foundation
+  // session. The Meta Ad agent inits itself from ad-account creds / PDF.
+  if (stage === 'meta_ad') {
+    return (
+      <MetaAdAgentBuilderScreen
+        threadId={metaThreadId}
+        isActive
+        onBack={handleNewProject}
+        onSelectView={(slug) => {
+          // No shared project session here; any non-meta nav target starts a
+          // fresh Email Campaign from the chooser/landing instead.
+          if (slug !== 'meta_ad_agent') handleNewProject();
+        }}
+        hideFoundation
+        projectName="Meta Ad Campaign"
+        onNewProject={handleNewProject}
+      />
     );
   }
 
@@ -213,10 +269,16 @@ export default function App() {
     );
   }
 
+  // Landing: first the campaign-type chooser, then the chosen campaign's entry.
+  if (campaign === null) {
+    return <CampaignChooser onSelect={handlePickCampaign} />;
+  }
+
   return (
     <EmailLanding
       onSelectFoundation={() => setStage('onboarding')}
       onUploadPdf={startWithPdf}
+      onBack={() => setCampaign(null)}
       uploading={loading}
       error={error}
     />

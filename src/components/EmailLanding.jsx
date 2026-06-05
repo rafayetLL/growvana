@@ -8,6 +8,7 @@ import { IconAttach, IconZap } from './icons.jsx';
 export default function EmailLanding({
   onSelectFoundation,
   onUploadPdf,
+  onBack,
   uploading,
   error,
 }) {
@@ -27,8 +28,18 @@ export default function EmailLanding({
 
   return (
     <div className="min-h-screen bg-ink-50 dark:bg-slate-950 flex flex-col">
-      <div className="h-14 px-6 flex items-center border-b border-ink-100 dark:border-slate-800 bg-white dark:bg-slate-900">
+      <div className="h-14 px-6 flex items-center gap-4 border-b border-ink-100 dark:border-slate-800 bg-white dark:bg-slate-900">
         <Logo />
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            disabled={uploading}
+            className="text-[13px] text-ink-500 dark:text-slate-400 hover:text-ink-700 dark:hover:text-slate-200 transition disabled:opacity-60"
+          >
+            ← Back
+          </button>
+        )}
       </div>
 
       <div className="flex-1 flex items-center justify-center px-6 py-10">
