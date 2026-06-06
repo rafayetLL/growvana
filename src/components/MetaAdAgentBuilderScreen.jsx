@@ -93,6 +93,20 @@ const DRAFTING_TO_STEP = {
 // its own lone entry (no combined). Default the canvas to the combined entry when it
 // exists, else the first/only doc.
 const COMBINED_ID = 'combined';
+
+// --- Liberate ad-account gate (client-side only) ---------------------------
+// The backend resolves the ad account from the synced Stage-1 cache by
+// tenant_id, so the ad-account id and Graph token are NEVER sent to it. Until
+// multi-account support lands, the user proves they own the Liberate account by
+// entering its id + token here; on an exact match we send the Liberate
+// tenant_id. All three live ONLY in .env (gitignored) — set VITE_LIBERATE_AAID,
+// VITE_LIBERATE_TOKEN, VITE_LIBERATE_TENANT_ID. If unset, the gate rejects all.
+const LIBERATE_AAID = import.meta.env.VITE_LIBERATE_AAID || '';
+const LIBERATE_TOKEN = import.meta.env.VITE_LIBERATE_TOKEN || '';
+const LIBERATE_TENANT_ID = import.meta.env.VITE_LIBERATE_TENANT_ID || '';
+const ACCOUNT_MISMATCH_MSG =
+  "Those credentials don't match the Liberate ad account. Growvana currently supports the Liberate account only — support for additional ad accounts is coming soon.";
+
 function defaultDiagnosisSel(diagnoses) {
   if (!diagnoses || !diagnoses.length) return '';
   return diagnoses.some((d) => d.ad_id === COMBINED_ID) ? COMBINED_ID : diagnoses[0].ad_id;
@@ -117,7 +131,9 @@ export default function MetaAdAgentBuilderScreen({
   const [phase, setPhase] = useState('setup'); // 'setup' | 'ready'
   const [path, setPath] = useState('tune_existing_ad');
   const [pdfFile, setPdfFile] = useState(null); // optional Blueprint PDF → init_with_pdf
-  const [tenantId, setTenantId] = useState('');
+  // Client-side gate: verified against the Liberate creds; never sent to the API.
+  const [adAccountId, setAdAccountId] = useState('');
+  const [adAccountToken, setAdAccountToken] = useState('');
   const [initLoading, setInitLoading] = useState(false);
   const [initError, setInitError] = useState(null);
 
@@ -165,7 +181,7 @@ export default function MetaAdAgentBuilderScreen({
   const doneMap = {
     diagnosis: latestDiagnoses.length > 0,
     competitor_lens: !!latestCompetitorLens,
-    strategy: !!latestStrategy,
+    strategy: latestStrategy.length > 0,
     creative: !!latestCreative,
   };
   const draftingStep = draftingAgent ? DRAFTING_TO_STEP[draftingAgent] : null;
@@ -175,8 +191,16 @@ export default function MetaAdAgentBuilderScreen({
   }, [messages, streamingText, gapQuestions, draftingAgent]);
 
   async function handleStart() {
-    if (!tenantId.trim()) {
-      setInitError('A tenant ID is required.');
+    const aaid = adAccountId.trim();
+    const token = adAccountToken.trim();
+    if (!aaid || !token) {
+      setInitError('Enter your ad account ID and access token to continue.');
+      return;
+    }
+    // Verify in the browser, then send only the resolved tenant_id — the creds
+    // themselves never leave the client.
+    if (aaid !== LIBERATE_AAID || token !== LIBERATE_TOKEN) {
+      setInitError(ACCOUNT_MISMATCH_MSG);
       return;
     }
     setInitLoading(true);
@@ -185,7 +209,7 @@ export default function MetaAdAgentBuilderScreen({
       const common = {
         thread_id: threadId,
         path,
-        tenant_id: tenantId.trim(),
+        tenant_id: LIBERATE_TENANT_ID,
       };
       // A selected PDF supplies brand context (skips phase-1); otherwise pull it
       // from the phase-1 checkpoint via foundation_thread_id.
@@ -402,8 +426,10 @@ export default function MetaAdAgentBuilderScreen({
           <SetupView
             path={path}
             setPath={setPath}
-            tenantId={tenantId}
-            setTenantId={setTenantId}
+            adAccountId={adAccountId}
+            setAdAccountId={setAdAccountId}
+            adAccountToken={adAccountToken}
+            setAdAccountToken={setAdAccountToken}
             initLoading={initLoading}
             initError={initError}
             onStart={handleStart}
@@ -597,8 +623,8 @@ function Stepper({ doneMap, draftingStep, current }) {
 // =============================================================
 
 function SetupView({
-  path, setPath, tenantId, setTenantId, initLoading, initError,
-  onStart, pdfFile, setPdfFile,
+  path, setPath, adAccountId, setAdAccountId, adAccountToken, setAdAccountToken,
+  initLoading, initError, onStart, pdfFile, setPdfFile,
 }) {
   return (
     <div className="flex-1 overflow-y-auto thin-scroll bg-canvas dark:bg-slate-950">
@@ -628,15 +654,28 @@ function SetupView({
 
         <div className="mt-6 rounded-2xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 p-5 shadow-card">
           <div className="text-[11px] tracking-wider uppercase text-navy-400 dark:text-slate-500 font-semibold">
-            Tenant &amp; brand context
+            Ad account &amp; brand context
           </div>
+          <p className="mt-1.5 text-[11.5px] text-navy-500 dark:text-slate-500 leading-relaxed">
+            Connect your Meta ad account. These credentials are verified in your browser and never leave it.
+          </p>
           <div className="mt-4 grid grid-cols-1 gap-4">
-            <Field label="Tenant ID (whose synced ad data to read)">
+            <Field label="Ad account ID">
               <input
                 type="text"
-                value={tenantId}
-                onChange={(e) => setTenantId(e.target.value)}
-                placeholder="e.g. 1a2b3c4d-5e6f-7890-abcd-ef1234567890"
+                value={adAccountId}
+                onChange={(e) => setAdAccountId(e.target.value)}
+                placeholder="e.g. 1234567890123456"
+                className="w-full bg-white dark:bg-slate-800 border border-navy-100 dark:border-slate-600 rounded-lg px-3 py-2 text-[13px] text-navy-900 dark:text-slate-100 placeholder:text-navy-400 dark:placeholder:text-slate-500 outline-none focus:border-meta-600 focus:ring-2 focus:ring-meta-100 dark:focus:ring-meta-500/20 transition"
+              />
+            </Field>
+            <Field label="Ad account access token">
+              <input
+                type="password"
+                value={adAccountToken}
+                onChange={(e) => setAdAccountToken(e.target.value)}
+                placeholder="Meta Graph API access token"
+                autoComplete="off"
                 className="w-full bg-white dark:bg-slate-800 border border-navy-100 dark:border-slate-600 rounded-lg px-3 py-2 text-[13px] text-navy-900 dark:text-slate-100 placeholder:text-navy-400 dark:placeholder:text-slate-500 outline-none focus:border-meta-600 focus:ring-2 focus:ring-meta-100 dark:focus:ring-meta-500/20 transition"
               />
             </Field>
