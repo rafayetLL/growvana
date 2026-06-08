@@ -1,8 +1,8 @@
 // Thin client for the /api/v1/meta-ad-agent endpoints.
 //
 // Two entry paths at /init:
-//   - create_campaign  → returns { path, ai_message, questions: [{gap, question, options}] }
-//   - tune_existing_ad → returns { path, ads: [{ad_id, ad_name, status, thumbnail_url,
+//   - create_ads  → returns { path, ai_message, questions: [{gap, question, options}] }
+//   - tune_existing_ads → returns { path, ads: [{ad_id, ad_name, status, thumbnail_url,
 //                                  format, objective, spend, ctr, cpc, cpm}] }
 // Both assemble the account snapshot from the synced Stage-1 cache, scoped by the
 // request's tenant_id (the ad account is resolved from the cache — no ad-account id
@@ -43,7 +43,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 /**
  * POST /api/v1/meta-ad-agent/init
- * `path` is 'create_campaign' or 'tune_existing_ad'. `tenant_id` scopes the synced
+ * `path` is 'create_ads' or 'tune_existing_ads'. `tenant_id` scopes the synced
  * ad data the snapshot is assembled from. `foundation_thread_id` is the phase-1
  * thread whose checkpoint supplies brand_bible + buyer_personas.
  */

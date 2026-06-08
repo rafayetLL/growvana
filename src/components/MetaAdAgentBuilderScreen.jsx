@@ -129,7 +129,7 @@ export default function MetaAdAgentBuilderScreen({
   const taskId = useRef(newTaskId()).current;
 
   const [phase, setPhase] = useState('setup'); // 'setup' | 'ready'
-  const [path, setPath] = useState('tune_existing_ad');
+  const [path, setPath] = useState('tune_existing_ads');
   const [pdfFile, setPdfFile] = useState(null); // optional Blueprint PDF → init_with_pdf
   // Client-side gate: verified against the Liberate creds; never sent to the API.
   const [adAccountId, setAdAccountId] = useState('');
@@ -166,15 +166,15 @@ export default function MetaAdAgentBuilderScreen({
   const scrollRef = useRef(null);
 
   const busy = typing || streamingText !== null;
-  const showAdsPanel = path === 'tune_existing_ad' && ads.length > 0;
+  const showAdsPanel = path === 'tune_existing_ads' && ads.length > 0;
   // Tune path: the chat input appears once the user clicks "Diagnose" (ads get
   // confirmed), but stays DISABLED until the first diagnosis lands — i.e. while the
   // diagnosis endpoint is running. Before clicking, the user is just picking ads in
   // the AdsPanel, so there's no input at all.
   const tuneAwaitingFirstDiagnosis =
-    path === 'tune_existing_ad' && latestDiagnoses.length === 0;
+    path === 'tune_existing_ads' && latestDiagnoses.length === 0;
   const showComposer =
-    path !== 'tune_existing_ad' || confirmedAdIds.length > 0 || latestDiagnoses.length > 0;
+    path !== 'tune_existing_ads' || confirmedAdIds.length > 0 || latestDiagnoses.length > 0;
   const composerDisabled = busy || gapQuestions.length > 0 || tuneAwaitingFirstDiagnosis;
 
   // Stepper state derived from which artifacts exist + what's drafting now.
@@ -216,7 +216,7 @@ export default function MetaAdAgentBuilderScreen({
       const res = pdfFile
         ? await initMetaAdAgentWithPdf({ ...common, pdfFile })
         : await initMetaAdAgent({ ...common, foundation_thread_id: threadId });
-      if (res.path === 'create_campaign') {
+      if (res.path === 'create_ads') {
         setMessages(res.ai_message ? [{ role: 'assistant', content: res.ai_message, time: Date.now() }] : []);
         setGapQuestions(res.questions || []);
       } else {
@@ -383,6 +383,9 @@ export default function MetaAdAgentBuilderScreen({
     ]);
     setConfirmedAdIds((prev) => [...new Set([...prev, ...adding])]);
     setSelectedAdIds([]);
+    // Collapse the picker once ads are sent for diagnosis — it rests until the
+    // user re-opens it to add more. The diagnosis takes over the canvas.
+    setAdsPanelOpen(false);
     runStream({ selected_ad_ids: adding });
   }
 
@@ -533,7 +536,7 @@ export default function MetaAdAgentBuilderScreen({
 
 function Header({ onBack, phase, path, doneMap, draftingStep, current }) {
   const hint =
-    path === 'create_campaign'
+    path === 'create_ads'
       ? 'Create · account pulse → brief → diagnosis'
       : 'Tune · diagnose your live ads';
   return (
@@ -639,14 +642,14 @@ function SetupView({
 
         <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <PathCard
-            active={path === 'tune_existing_ad'}
-            onClick={() => setPath('tune_existing_ad')}
+            active={path === 'tune_existing_ads'}
+            onClick={() => setPath('tune_existing_ads')}
             title="Tune existing ad"
             body="Pick live ads to diagnose together. I find the pattern, name the top and bottom performers, and recommend the fix."
           />
           <PathCard
-            active={path === 'create_campaign'}
-            onClick={() => setPath('create_campaign')}
+            active={path === 'create_ads'}
+            onClick={() => setPath('create_ads')}
             title="Create · new campaign"
             body="Answer a few questions. I read your account-wide pulse and blueprint, then ground a new campaign in real performance."
           />
@@ -707,7 +710,7 @@ function SetupView({
               onClick={onStart}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-meta-600 hover:bg-meta-700 text-white text-[13px] font-medium shadow-sm transition disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {initLoading ? 'Reading your account…' : path === 'create_campaign' ? 'Start a campaign' : 'Pull my ads'}
+              {initLoading ? 'Reading your account…' : path === 'create_ads' ? 'Start a campaign' : 'Pull my ads'}
             </button>
           </div>
         </div>
@@ -760,12 +763,19 @@ function AdsPanel({ ads, confirmed, pending, onToggle, onAdd, busy, open, setOpe
         onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-2.5 px-5 py-3 text-left"
       >
-        <span className="h-6 w-6 rounded-lg bg-meta-50 dark:bg-meta-500/15 grid place-items-center text-meta-600 dark:text-meta-500 shrink-0">
+        <span
+          className={[
+            'h-6 w-6 rounded-lg bg-meta-50 dark:bg-meta-500/15 grid place-items-center text-meta-600 dark:text-meta-500 shrink-0 transition-opacity',
+            open ? '' : 'opacity-40',
+          ].join(' ')}
+        >
           <IconTarget width={13} height={13} />
         </span>
         <span className="text-[13px] font-semibold text-navy-900 dark:text-slate-100">Your ads</span>
         <span className="text-[11px] font-medium text-navy-500 dark:text-slate-400">
-          {confirmed.length} diagnosed
+          {confirmed.length > 0
+            ? `${confirmed.length} ad${confirmed.length === 1 ? '' : 's'} diagnosed`
+            : 'Select ads to diagnose'}
           {pendingCount ? <span className="text-meta-600 dark:text-meta-500"> · {pendingCount} new</span> : ''}
         </span>
         <span className="ml-auto text-navy-400 dark:text-slate-500">
