@@ -1678,16 +1678,16 @@ function SingleImageAd({ ad, onUpdate, busy, adRef }) {
       <Card title="Copy options">
         <OptionPicker label="Primary text" options={ad.primary_texts} idx={ci.primary} setIdx={(i) => setCi((p) => ({ ...p, primary: i }))}
           onUpdate={onUpdate} busy={busy}
-          compose={(instr) => `Update ${adRef}: the primary text (option [${ci.primary}]) — ${instr}`} />
+          compose={(instr) => `Update ${adRef}: the primary text — ${instr}`} />
         <OptionPicker label="Headline" options={ad.headlines} idx={ci.headline} setIdx={(i) => setCi((p) => ({ ...p, headline: i }))}
           onUpdate={onUpdate} busy={busy}
-          compose={(instr) => `Update ${adRef}: the headline (option [${ci.headline}]) — ${instr}`} />
+          compose={(instr) => `Update ${adRef}: the headline — ${instr}`} />
         <OptionPicker label="Description" options={ad.descriptions} idx={ci.description} setIdx={(i) => setCi((p) => ({ ...p, description: i }))}
           onUpdate={onUpdate} busy={busy}
-          compose={(instr) => `Update ${adRef}: the description (option [${ci.description}]) — ${instr}`} />
+          compose={(instr) => `Update ${adRef}: the description — ${instr}`} />
         <OptionPicker label="Call to action" options={ad.ctas} idx={ci.cta} setIdx={(i) => setCi((p) => ({ ...p, cta: i }))} format={ctaLabel}
           onUpdate={onUpdate} busy={busy}
-          compose={(instr) => `Update ${adRef}: the call-to-action (option [${ci.cta}]) — ${instr}`} />
+          compose={(instr) => `Update ${adRef}: the call-to-action — ${instr}`} />
         {ad.link ? <DetailField label="Link" value={ad.link} /> : null}
       </Card>
 
@@ -1939,10 +1939,10 @@ function CarouselAd({ ad, onUpdate, busy, adRef }) {
       <Card title="Carousel copy (shared across cards)">
         <OptionPicker label="Primary text" options={ad.primary_texts} idx={primaryIdx} setIdx={setPrimaryIdx}
           onUpdate={onUpdate} busy={busy}
-          compose={(instr) => `Update ${adRef}: the carousel primary text (option [${primaryIdx}]) — ${instr}`} />
+          compose={(instr) => `Update ${adRef}: the carousel primary text — ${instr}`} />
         <OptionPicker label="Default CTA" options={ad.ctas} idx={ctaIdx} setIdx={setCtaIdx} format={ctaLabel}
           onUpdate={onUpdate} busy={busy}
-          compose={(instr) => `Update ${adRef}: the default CTA (option [${ctaIdx}]) — ${instr}`} />
+          compose={(instr) => `Update ${adRef}: the default CTA — ${instr}`} />
       </Card>
       <div className="space-y-4">
         {cards.map((card, i) => {
@@ -1953,13 +1953,13 @@ function CarouselAd({ ad, onUpdate, busy, adRef }) {
             <Card key={slotKey} title={`Card ${i + 1}`}>
               <OptionPicker label="Headline" options={card.headlines} idx={cardIdx(slotKey, 'headline')} setIdx={(x) => setCardIdx(slotKey, 'headline', x)}
                 onUpdate={onUpdate} busy={busy}
-                compose={(instr) => `Update ${adRef}, card ${slotKey}: the headline (option [${cardIdx(slotKey, 'headline')}]) — ${instr}`} />
+                compose={(instr) => `Update ${adRef}, card ${slotKey}: the headline — ${instr}`} />
               <OptionPicker label="Description" options={card.descriptions} idx={cardIdx(slotKey, 'description')} setIdx={(x) => setCardIdx(slotKey, 'description', x)}
                 onUpdate={onUpdate} busy={busy}
-                compose={(instr) => `Update ${adRef}, card ${slotKey}: the description (option [${cardIdx(slotKey, 'description')}]) — ${instr}`} />
+                compose={(instr) => `Update ${adRef}, card ${slotKey}: the description — ${instr}`} />
               <OptionPicker label="CTA" options={card.ctas} idx={cardIdx(slotKey, 'cta')} setIdx={(x) => setCardIdx(slotKey, 'cta', x)} format={ctaLabel}
                 onUpdate={onUpdate} busy={busy}
-                compose={(instr) => `Update ${adRef}, card ${slotKey}: the CTA (option [${cardIdx(slotKey, 'cta')}]) — ${instr}`} />
+                compose={(instr) => `Update ${adRef}, card ${slotKey}: the CTA — ${instr}`} />
               <DetailField label="Link" value={card.link} />
               <div className="mt-3 pt-3 border-t border-navy-100/70 dark:border-slate-800">
                 {cardAspects.length ? (
