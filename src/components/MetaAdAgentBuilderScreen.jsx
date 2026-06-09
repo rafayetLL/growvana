@@ -197,8 +197,8 @@ export default function MetaAdAgentBuilderScreen({
       setInitError('Enter your ad account ID and access token to continue.');
       return;
     }
-    // Verify in the browser, then send only the resolved tenant_id — the creds
-    // themselves never leave the client.
+    // Verify in the browser, then send the resolved tenant_id + ad-account id —
+    // the access token never leaves the client.
     if (aaid !== LIBERATE_AAID || token !== LIBERATE_TOKEN) {
       setInitError(ACCOUNT_MISMATCH_MSG);
       return;
@@ -210,6 +210,7 @@ export default function MetaAdAgentBuilderScreen({
         thread_id: threadId,
         path,
         tenant_id: LIBERATE_TENANT_ID,
+        account_id: LIBERATE_AAID,
       };
       // A selected PDF supplies brand context (skips phase-1); otherwise pull it
       // from the phase-1 checkpoint via foundation_thread_id.

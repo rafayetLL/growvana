@@ -5,8 +5,9 @@
 //   - tune_existing_ads → returns { path, ads: [{ad_id, ad_name, status, thumbnail_url,
 //                                  format, objective, spend, ctr, cpc, cpm}] }
 // Both assemble the account snapshot from the synced Stage-1 cache, scoped by the
-// request's tenant_id (the ad account is resolved from the cache — no ad-account id
-// or Graph token is sent here; those live only on the /meta-ad-sync/run endpoint).
+// request's tenant_id + account_id (which ad account to read, since a tenant owns
+// many). The Graph token is NOT sent here — it lives only on the /meta-ad-sync/run
+// endpoint.
 //
 // /stream SSE frame types (each yielded value is one parsed `data: <json>` frame):
 //   - { type: 'ai_message_token', content }       tokens for the CMO's <message> body
@@ -43,8 +44,9 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 /**
  * POST /api/v1/meta-ad-agent/init
- * `path` is 'create_ads' or 'tune_existing_ads'. `tenant_id` scopes the synced
- * ad data the snapshot is assembled from. `foundation_thread_id` is the phase-1
+ * `path` is 'create_ads' or 'tune_existing_ads'. `tenant_id` + `account_id` scope
+ * the synced ad data the snapshot is assembled from (`account_id` picks which ad
+ * account; accepts `act_…` or the bare id). `foundation_thread_id` is the phase-1
  * thread whose checkpoint supplies brand_bible + buyer_personas.
  */
 export async function initMetaAdAgent({
@@ -52,6 +54,7 @@ export async function initMetaAdAgent({
   foundation_thread_id,
   path,
   tenant_id,
+  account_id,
 }) {
   const res = await fetch(`${API_BASE}/meta-ad-agent/init`, {
     method: 'POST',
@@ -61,6 +64,7 @@ export async function initMetaAdAgent({
       foundation_thread_id,
       path,
       tenant_id,
+      account_id,
     }),
   });
   if (!res.ok) {
@@ -82,12 +86,14 @@ export async function initMetaAdAgentWithPdf({
   thread_id,
   path,
   tenant_id,
+  account_id,
   pdfFile,
 }) {
   const form = new FormData();
   form.append('thread_id', thread_id);
   form.append('path', path);
   form.append('tenant_id', tenant_id);
+  form.append('account_id', account_id);
   form.append('pdf_file', pdfFile);
   const res = await fetch(`${API_BASE}/meta-ad-agent/init_with_pdf`, {
     method: 'POST',
