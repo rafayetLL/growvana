@@ -168,14 +168,16 @@ export default function MetaAdAgentBuilderScreen({
   const busy = typing || streamingText !== null;
   const showAdsPanel = path === 'tune_existing_ads' && ads.length > 0;
   // Tune path: the chat input appears once the user clicks "Diagnose" (ads get
-  // confirmed), but stays DISABLED until the first diagnosis lands — i.e. while the
-  // diagnosis endpoint is running. Before clicking, the user is just picking ads in
-  // the AdsPanel, so there's no input at all.
+  // confirmed). Before clicking, the user is just picking ads in the AdsPanel, so
+  // there's no input at all. While the first diagnosis turn is running the
+  // placeholder says so — but the lock itself is just `busy`: a turn can finish
+  // WITHOUT a diagnosis (e.g. the agent declines a video-only selection and asks
+  // a question instead), and the input must unlock so the user can answer.
   const tuneAwaitingFirstDiagnosis =
-    path === 'tune_existing_ads' && latestDiagnoses.length === 0;
+    path === 'tune_existing_ads' && busy && latestDiagnoses.length === 0;
   const showComposer =
     path !== 'tune_existing_ads' || confirmedAdIds.length > 0 || latestDiagnoses.length > 0;
-  const composerDisabled = busy || gapQuestions.length > 0 || tuneAwaitingFirstDiagnosis;
+  const composerDisabled = busy || gapQuestions.length > 0;
 
   // Stepper state derived from which artifacts exist + what's drafting now.
   const doneMap = {
@@ -240,7 +242,7 @@ export default function MetaAdAgentBuilderScreen({
     }
   }
 
-  async function runStream({ user_message, gap_answers, selected_ad_ids }) {
+  async function runStream({ user_message, gap_answers, selected_ad_ids, attachment_urls }) {
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -285,6 +287,7 @@ export default function MetaAdAgentBuilderScreen({
         user_message,
         gap_answers,
         selected_ad_ids,
+        attachment_urls,
         webhook_request,
         signal: controller.signal,
       })) {
@@ -393,16 +396,19 @@ export default function MetaAdAgentBuilderScreen({
   // Canvas edit boxes show ONLY the user's instruction in chat, but send the full
   // POSITIONED message (which ad / campaign / ad set / slot it targets) to the
   // endpoint, so the agent knows what to change without the user seeing the plumbing.
-  function sendTurn(displayText, endpointText) {
+  function sendTurn(displayText, endpointText, attachment_urls) {
     const ep = ((endpointText ?? displayText) || '').trim();
     if (!ep) return;
     const shown = (displayText || ep).trim();
-    setMessages((prev) => [...prev, { role: 'user', content: shown, time: Date.now() }]);
-    runStream({ user_message: ep });
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: shown, attachments: attachment_urls, time: Date.now() },
+    ]);
+    runStream({ user_message: ep, attachment_urls });
   }
 
-  function handleSendText(text) {
-    sendTurn(text, text);
+  function handleSendText(text, attachment_urls) {
+    sendTurn(text, text, attachment_urls);
   }
 
   return (

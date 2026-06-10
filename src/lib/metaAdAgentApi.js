@@ -111,6 +111,7 @@ export async function* streamMetaAdAgent({
   user_message,
   gap_answers,
   selected_ad_ids,
+  attachment_urls,
   webhook_request,
   signal,
 }) {
@@ -118,6 +119,12 @@ export async function* streamMetaAdAgent({
   if (user_message !== undefined) body.meta_ad_request.user_message = user_message;
   if (gap_answers !== undefined) body.meta_ad_request.gap_answers = gap_answers;
   if (selected_ad_ids !== undefined) body.meta_ad_request.selected_ad_ids = selected_ad_ids;
+  // Per-turn chat attachments (image/PDF URLs): the backend downloads them and
+  // inlines the bytes as multimodal parts on the SQL + CMO agents' LLM calls;
+  // they do not persist across turns.
+  if (attachment_urls && attachment_urls.length > 0) {
+    body.meta_ad_request.attachment_urls = attachment_urls;
+  }
   if (webhook_request) body.webhook_request = webhook_request;
 
   const res = await fetch(`${API_BASE}/meta-ad-agent/stream`, {
