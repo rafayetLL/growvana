@@ -755,6 +755,20 @@ function Field({ label, children }) {
 // Confirmed ads are locked (checked + disabled); new picks flow to the stream.
 // =============================================================
 
+// Delivery badge derived from the card's two DB-mirrored status fields —
+// `effective_status` (Meta computed) first, then `status` (advertiser toggle) —
+// the same order the backend's tiered selection uses, so the badge always
+// matches the tier the ad was picked from.
+function deliveryBadge(ad) {
+  if (ad.effective_status === 'ACTIVE') {
+    return { label: 'Live', cls: 'text-positive bg-mint-100 dark:bg-mint-500/15' };
+  }
+  if (ad.status === 'ACTIVE') {
+    return { label: 'On · not delivering', cls: 'text-gold bg-gold/10 dark:bg-gold/20' };
+  }
+  return { label: 'Off', cls: 'text-navy-500 bg-navy-100 dark:text-slate-400 dark:bg-slate-700' };
+}
+
 function AdsPanel({ ads, confirmed, pending, onToggle, onAdd, busy, open, setOpen }) {
   const pendingCount = pending.length;
   return (
@@ -792,6 +806,7 @@ function AdsPanel({ ads, confirmed, pending, onToggle, onAdd, busy, open, setOpe
               const isPending = pending.includes(ad.ad_id);
               const checked = isConfirmed || isPending;
               const locked = isConfirmed || busy;
+              const badge = deliveryBadge(ad);
               return (
                 <button
                   key={ad.ad_id}
@@ -820,6 +835,11 @@ function AdsPanel({ ads, confirmed, pending, onToggle, onAdd, busy, open, setOpe
                       <div className="text-[13px] font-semibold text-navy-900 dark:text-slate-100 truncate">
                         {ad.ad_name || ad.ad_id}
                       </div>
+                      <span
+                        className={`shrink-0 text-[9.5px] font-semibold uppercase tracking-wide rounded px-1.5 py-0.5 ${badge.cls}`}
+                      >
+                        {badge.label}
+                      </span>
                       {isConfirmed && (
                         <span className="shrink-0 text-[9.5px] font-semibold uppercase tracking-wide text-positive bg-mint-100 dark:bg-mint-500/15 rounded px-1.5 py-0.5">
                           Diagnosed
@@ -827,7 +847,7 @@ function AdsPanel({ ads, confirmed, pending, onToggle, onAdd, busy, open, setOpe
                       )}
                     </div>
                     <div className="text-[11px] text-navy-500 dark:text-slate-400 truncate">
-                      {[ad.format, ad.status].filter(Boolean).join(' · ')}
+                      {[ad.format, ad.effective_status].filter(Boolean).join(' · ')}
                     </div>
                     <div className="mt-0.5 text-[10.5px] text-navy-500 dark:text-slate-400 font-mono">
                       spend {money(ad.spend)} · CTR {pct(ad.ctr)} · CPC {money(ad.cpc)}
