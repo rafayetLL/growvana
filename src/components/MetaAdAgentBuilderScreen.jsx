@@ -90,8 +90,9 @@ const DRAFTING_TO_STEP = {
 // The diagnosis payload is a uniform list: [{ad_id, ad_name, diagnosis_html}].
 // The "combined" entry (ad_id === 'combined') is the account-wide roll-up — present
 // only for ≥2 selected ads or the create/account-wide path. A single selected ad is
-// its own lone entry (no combined). Default the canvas to the combined entry when it
-// exists, else the first/only doc.
+// its own lone entry (no combined). The canvas lists per-ad docs FIRST and the
+// combined roll-up LAST, and defaults to the first per-ad doc (never combined unless
+// combined is the only doc present).
 const COMBINED_ID = 'combined';
 
 // --- Liberate ad-account gate (client-side only) ---------------------------
@@ -107,9 +108,19 @@ const LIBERATE_TENANT_ID = import.meta.env.VITE_LIBERATE_TENANT_ID || '';
 const ACCOUNT_MISMATCH_MSG =
   "Those credentials don't match the Liberate ad account. Growvana currently supports the Liberate account only — support for additional ad accounts is coming soon.";
 
+// Order docs so the account-wide "combined" roll-up sorts to the END — per-ad docs
+// lead, combined comes last. Stable: per-ad docs keep their incoming order.
+function orderDocs(docs) {
+  if (!docs) return [];
+  return [...docs].sort(
+    (a, b) => (a.ad_id === COMBINED_ID ? 1 : 0) - (b.ad_id === COMBINED_ID ? 1 : 0)
+  );
+}
 function defaultDiagnosisSel(diagnoses) {
   if (!diagnoses || !diagnoses.length) return '';
-  return diagnoses.some((d) => d.ad_id === COMBINED_ID) ? COMBINED_ID : diagnoses[0].ad_id;
+  // First per-ad doc (combined sorts last) — never default to the combined view
+  // unless combined is the only doc present.
+  return orderDocs(diagnoses)[0].ad_id;
 }
 function diagnosisOptionLabel(d) {
   return d.ad_id === COMBINED_ID ? 'Combined · account-wide' : (d.ad_name || d.ad_id);
@@ -929,11 +940,11 @@ function ArtifactCanvas({
   const html = useMemo(() => {
     if (effectiveSel === 'competitor_lens') return competitorLens || '';
     if (effectiveSel === 'diagnosis' && diagnoses.length) {
-      const doc = diagnoses.find((d) => d.ad_id === canvasSel) || diagnoses[0];
+      const doc = diagnoses.find((d) => d.ad_id === canvasSel) || orderDocs(diagnoses)[0];
       return doc?.diagnosis_html || '';
     }
     if (effectiveSel === 'strategy' && strategy.length) {
-      const doc = strategy.find((d) => d.ad_id === strategyCanvasSel) || strategy[0];
+      const doc = strategy.find((d) => d.ad_id === strategyCanvasSel) || orderDocs(strategy)[0];
       return doc?.strategy_html || '';
     }
     return '';
@@ -987,7 +998,7 @@ function ArtifactCanvas({
               onChange={(e) => setSel(e.target.value)}
               className="ml-auto bg-white dark:bg-slate-800 border border-navy-100 dark:border-slate-600 rounded-lg px-3 py-1.5 text-[12.5px] text-navy-900 dark:text-slate-100 outline-none focus:border-meta-600 transition"
             >
-              {docs.map((d) => (
+              {orderDocs(docs).map((d) => (
                 <option key={d.ad_id} value={d.ad_id}>
                   {diagnosisOptionLabel(d)}
                 </option>
