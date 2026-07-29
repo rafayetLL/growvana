@@ -95,18 +95,44 @@ const DRAFTING_TO_STEP = {
 // combined is the only doc present).
 const COMBINED_ID = 'combined';
 
-// --- Liberate ad-account gate (client-side only) ---------------------------
+// --- Meta ad-account tabs (client-side only) -------------------------------
 // The backend resolves the ad account from the synced Stage-1 cache by
-// tenant_id, so the ad-account id and Graph token are NEVER sent to it. Until
-// multi-account support lands, the user proves they own the Liberate account by
-// entering its id + token here; on an exact match we send the Liberate
-// tenant_id. All three live ONLY in .env (gitignored) — set VITE_LIBERATE_AAID,
-// VITE_LIBERATE_TOKEN, VITE_LIBERATE_TENANT_ID. If unset, the gate rejects all.
-const LIBERATE_AAID = import.meta.env.VITE_LIBERATE_AAID || '';
-const LIBERATE_TOKEN = import.meta.env.VITE_LIBERATE_TOKEN || '';
-const LIBERATE_TENANT_ID = import.meta.env.VITE_LIBERATE_TENANT_ID || '';
-const ACCOUNT_MISMATCH_MSG =
-  "Those credentials don't match the Liberate ad account. Growvana currently supports the Liberate account only — support for additional ad accounts is coming soon.";
+// tenant_id, so the ad-account id and Graph token are NEVER sent to it. The
+// setup screen shows one TAB per configured account; picking a tab sends ONLY
+// that account's tenant_id + account_id. Credentials live ONLY in .env
+// (gitignored). Add a tenant by setting VITE_ACCOUNT<N>_{AAID,TOKEN,TENANT_ID,
+// LABEL?} and copying an ACCOUNT_SLOTS row below.
+const ACCOUNT_SLOTS = [
+  {
+    label: 'Liberate',
+    aaid: import.meta.env.VITE_LIBERATE_AAID,
+    token: import.meta.env.VITE_LIBERATE_TOKEN,
+    tenant_id: import.meta.env.VITE_LIBERATE_TENANT_ID,
+  },
+  {
+    label: import.meta.env.VITE_ACCOUNT2_LABEL || 'Account 2',
+    aaid: import.meta.env.VITE_ACCOUNT2_AAID,
+    token: import.meta.env.VITE_ACCOUNT2_TOKEN,
+    tenant_id: import.meta.env.VITE_ACCOUNT2_TENANT_ID,
+  },
+  {
+    label: import.meta.env.VITE_ACCOUNT3_LABEL || 'Account 3',
+    aaid: import.meta.env.VITE_ACCOUNT3_AAID,
+    token: import.meta.env.VITE_ACCOUNT3_TOKEN,
+    tenant_id: import.meta.env.VITE_ACCOUNT3_TENANT_ID,
+  },
+  // Add more: copy the block above as VITE_ACCOUNT4_*, VITE_ACCOUNT5_*, …
+];
+// Only fully-configured accounts get a tab.
+const ACCOUNTS = ACCOUNT_SLOTS.filter((a) => a.aaid && a.token && a.tenant_id);
+// The "No account" tab: init with NEITHER tenant_id nor account_id (the backend
+// takes them as an optional PAIR). Create path only — tune has no ads to pick —
+// and the Blueprint PDF becomes REQUIRED (it is the only brand-context source).
+const NO_ACCOUNT_TAB = { label: 'No account · PDF only', noAccount: true };
+const ACCOUNT_TABS = [...ACCOUNTS, NO_ACCOUNT_TAB];
+// Typed-credential gate RETIRED in favor of the account tabs — kept for restore.
+// const ACCOUNT_MISMATCH_MSG =
+//   "Those credentials don't match a connected ad account. Double-check your ad-account ID and access token, then try again.";
 
 // Order docs so the account-wide "combined" roll-up sorts to the END — per-ad docs
 // lead, combined comes last. Stable: per-ad docs keep their incoming order.
@@ -126,6 +152,154 @@ function diagnosisOptionLabel(d) {
   return d.ad_id === COMBINED_ID ? 'Combined · account-wide' : (d.ad_name || d.ad_id);
 }
 
+// ---------------------------------------------------------------------------
+// Granular meta-ad webhook merge helpers. The backend streams each artifact as it
+// lands (a diagnosis/strategy doc as each generates, a creative ad/image as each
+// finishes, the campaign+ad set / an edit batch as one `structure` payload); these
+// fold each incoming piece into the screen's state IMMUTABLY (new objects so React
+// re-renders). The SSE `done` frame remains authoritative and re-sets everything at
+// end-of-turn, so a missed webhook is always backfilled.
+// ---------------------------------------------------------------------------
+
+// Upsert a diagnosis / strategy doc into its list by ad_id (the real ad id on tune,
+// or 'combined'). Replaces an existing doc in place, else appends.
+function upsertDoc(list, doc) {
+  const arr = list || [];
+  const i = arr.findIndex((d) => d.ad_id === doc.ad_id);
+  if (i === -1) return [...arr, doc];
+  const next = [...arr];
+  next[i] = doc;
+  return next;
+}
+
+// A shallow, mutation-safe copy of the creative tree (campaigns → adsets → ads),
+// so each merge returns a fresh object graph without touching the previous one.
+function cloneTree(tree) {
+  const campaigns = (tree?.campaigns || []).map((g) => ({
+    ...g,
+    adsets: (g.adsets || []).map((a) => ({ ...a, ads: [...(a.ads || [])] })),
+  }));
+  return { campaigns };
+}
+
+// The campaign group index for a campaign_id. On tune, MATCH BY REAL ID — and return
+// -1 when it isn't in the tree yet, so the caller creates a NEW group (selected ads
+// can span several campaigns; never fold a second campaign into the first). Only the
+// create path (null id → one implicit campaign group) falls back to index 0.
+function campaignGroupIdx(campaigns, campaignId) {
+  if (campaignId) {
+    return campaigns.findIndex((g) => g.campaign?.campaign_id === campaignId);
+  }
+  return campaigns.length ? 0 : -1;
+}
+
+// A campaign / ad-set node in an incoming partial tree is a real object when it
+// carries its defining fields, or a bare `{campaign_id}` / `{adset_id}` LOCATOR
+// (present only to place a child — the full object rode `.structure` / `done`).
+function hasRealCampaign(c) {
+  return !!c && (c.name != null || c.objective != null);
+}
+function hasRealAdset(a) {
+  return !!a && (a.name != null || a.optimization_goal != null);
+}
+// An ad from the `.image` fragment carries only `key` + `image_slots` (no `name`),
+// so its slots MERGE into the existing ad; a full ad (from `.ad` / `.structure`)
+// carries `name` and REPLACES the ad wholesale.
+function isImageFragmentAd(ad) {
+  return !!ad && ad.name == null && Array.isArray(ad.image_slots);
+}
+
+// Locate an ad anywhere in the tree by `key` (real ad id on tune, index on create).
+function locateAdInTree(tree, key) {
+  for (const g of tree.campaigns) {
+    for (const asg of g.adsets) {
+      const idx = asg.ads.findIndex((x) => x.key === key);
+      if (idx !== -1) return { asg, idx };
+    }
+  }
+  return null;
+}
+
+// Merge an `.image` fragment's image_slots into an existing ad — append / replace a
+// variant in its ad → slot → aspect-lane, keyed by slot_key / aspect_ratio / variant_key
+// (creating the slot + lane if new). Never touches copy pools.
+function mergeImageSlots(ad, incomingSlots) {
+  const slots = (ad.image_slots || []).map((s) => ({
+    ...s,
+    aspects: (s.aspects || []).map((asp) => ({ ...asp, variants: [...(asp.variants || [])] })),
+  }));
+  for (const inSlot of incomingSlots || []) {
+    let slot = slots.find((s) => s.slot_key === inSlot.slot_key);
+    if (!slot) {
+      slot = { slot_key: inSlot.slot_key, aspects: [] };
+      slots.push(slot);
+    }
+    for (const inAsp of inSlot.aspects || []) {
+      let lane = slot.aspects.find((asp) => asp.aspect_ratio === inAsp.aspect_ratio);
+      if (!lane) {
+        lane = { aspect_ratio: inAsp.aspect_ratio, variants: [] };
+        slot.aspects.push(lane);
+      }
+      for (const v of inAsp.variants || []) {
+        const vi = lane.variants.findIndex((x) => x.variant_key === v.variant_key);
+        if (vi === -1) lane.variants.push(v);
+        else lane.variants[vi] = v;
+      }
+    }
+  }
+  return { ...ad, image_slots: slots };
+}
+
+// Fold ONE partial `{campaigns:[...]}` tree (the `done` frame's value shape) into the
+// creative tree — the single merge for every `meta_ad.creative.*` webhook (structure /
+// ad / image). Campaign + ad-set objects merge by real Meta id (the single group on
+// create); an ad REPLACES by `key` (or is inserted), except an image-only fragment
+// which merges its variants in. The SSE `done` frame stays authoritative and replaces
+// the whole tree at end-of-turn, so a missed webhook is always backfilled.
+function mergeCreativeTree(prev, incomingCampaigns) {
+  const next = cloneTree(prev);
+  for (const inCg of incomingCampaigns || []) {
+    const cid = inCg.campaign?.campaign_id || null;
+    let gi = campaignGroupIdx(next.campaigns, cid);
+    if (gi === -1) {
+      // New group — keep whatever came in (a real campaign, or a bare `{campaign_id}`
+      // locator so a later real-campaign webhook matches by id and merges in).
+      next.campaigns.push({ campaign: inCg.campaign ?? null, adsets: [] });
+      gi = next.campaigns.length - 1;
+    } else if (hasRealCampaign(inCg.campaign)) {
+      // Existing group — only a REAL campaign overwrites; a locator never wipes it.
+      next.campaigns[gi] = { ...next.campaigns[gi], campaign: inCg.campaign };
+    }
+    const grp = next.campaigns[gi];
+    for (const inAsg of inCg.adsets || []) {
+      const sid = inAsg.adset?.adset_id || null;
+      let ai = sid
+        ? grp.adsets.findIndex((a) => a.adset?.adset_id === sid)
+        : grp.adsets.length
+          ? 0
+          : -1;
+      if (ai === -1) {
+        grp.adsets.push({ adset: inAsg.adset ?? null, ads: [] });
+        ai = grp.adsets.length - 1;
+      } else if (hasRealAdset(inAsg.adset)) {
+        grp.adsets[ai] = { ...grp.adsets[ai], adset: inAsg.adset };
+      }
+      const asg = grp.adsets[ai];
+      for (const inAd of inAsg.ads || []) {
+        const found = locateAdInTree(next, inAd.key);
+        if (isImageFragmentAd(inAd)) {
+          if (found) found.asg.ads[found.idx] = mergeImageSlots(found.asg.ads[found.idx], inAd.image_slots);
+        } else if (found) {
+          found.asg.ads[found.idx] = inAd;
+        } else {
+          asg.ads.push(inAd);
+        }
+      }
+    }
+  }
+  return next;
+}
+
 export default function MetaAdAgentBuilderScreen({
   threadId,
   isActive = true,
@@ -141,10 +315,12 @@ export default function MetaAdAgentBuilderScreen({
 
   const [phase, setPhase] = useState('setup'); // 'setup' | 'ready'
   const [path, setPath] = useState('tune_existing_ads');
-  const [pdfFile, setPdfFile] = useState(null); // optional Blueprint PDF → init_with_pdf
-  // Client-side gate: verified against the Liberate creds; never sent to the API.
-  const [adAccountId, setAdAccountId] = useState('');
-  const [adAccountToken, setAdAccountToken] = useState('');
+  const [pdfFile, setPdfFile] = useState(null); // Blueprint PDF → init_with_pdf (REQUIRED on the No-account tab)
+  // Which account tab is selected — an index into ACCOUNT_TABS (last = "No account").
+  const [accountIdx, setAccountIdx] = useState(0);
+  // Typed-credential gate RETIRED in favor of the account tabs — kept for restore.
+  // const [adAccountId, setAdAccountId] = useState('');
+  // const [adAccountToken, setAdAccountToken] = useState('');
   const [initLoading, setInitLoading] = useState(false);
   const [initError, setInitError] = useState(null);
 
@@ -162,6 +338,13 @@ export default function MetaAdAgentBuilderScreen({
   const [typing, setTyping] = useState(false);
   const [turnError, setTurnError] = useState(null);
   const [draftingAgent, setDraftingAgent] = useState(null);
+  // Live "what's happening" feed for the running turn — fed by the SSE node-start
+  // events AND every granular webhook message (tool calls, lens pipeline steps,
+  // completions), so the user watches each step land instead of staring at a spinner.
+  const [activity, setActivity] = useState([]); // [string] — the running turn's step log
+  const pushActivity = (text) => {
+    if (text) setActivity((prev) => [...prev, text].slice(-40));
+  };
 
   const [latestDiagnoses, setLatestDiagnoses] = useState([]); // [{ad_id, ad_name, diagnosis_html}]
   const [latestCompetitorLens, setLatestCompetitorLens] = useState(null); // html string
@@ -204,26 +387,50 @@ export default function MetaAdAgentBuilderScreen({
   }, [messages, streamingText, gapQuestions, draftingAgent]);
 
   async function handleStart() {
-    const aaid = adAccountId.trim();
-    const token = adAccountToken.trim();
-    if (!aaid || !token) {
-      setInitError('Enter your ad account ID and access token to continue.');
+    const account = ACCOUNT_TABS[accountIdx];
+    if (!account) {
+      setInitError('Pick an ad account to continue.');
       return;
     }
-    // Verify in the browser, then send the resolved tenant_id + ad-account id —
-    // the access token never leaves the client.
-    if (aaid !== LIBERATE_AAID || token !== LIBERATE_TOKEN) {
-      setInitError(ACCOUNT_MISMATCH_MSG);
-      return;
+    if (account.noAccount) {
+      // Backend NO-ACCOUNT mode. Tune is impossible without an account (there
+      // are no ads to pick), and brand context must come from the PDF.
+      if (path === 'tune_existing_ads') {
+        setInitError(
+          'Tuning existing ads needs a connected ad account — pick an account tab, or switch to Create.'
+        );
+        return;
+      }
+      if (!pdfFile) {
+        setInitError(
+          'The No-account option needs a Brand Blueprint PDF for brand context — upload one to continue.'
+        );
+        return;
+      }
     }
+    // Typed-credential gate RETIRED in favor of the account tabs — kept for restore.
+    // const aaid = adAccountId.trim();
+    // const token = adAccountToken.trim();
+    // if (!aaid || !token) {
+    //   setInitError('Enter your ad account ID and access token to continue.');
+    //   return;
+    // }
+    // const account = ACCOUNTS.find((a) => aaid === a.aaid && token === a.token);
+    // if (!account) {
+    //   setInitError(ACCOUNT_MISMATCH_MSG);
+    //   return;
+    // }
     setInitLoading(true);
     setInitError(null);
     try {
       const common = {
         thread_id: threadId,
         path,
-        tenant_id: LIBERATE_TENANT_ID,
-        account_id: LIBERATE_AAID,
+        // "No account": omit the pair entirely — the backend takes tenant_id +
+        // account_id as an optional PAIR (both or neither).
+        ...(account.noAccount
+          ? {}
+          : { tenant_id: account.tenant_id, account_id: account.aaid }),
       };
       // A selected PDF supplies brand context (skips phase-1); otherwise pull it
       // from the phase-1 checkpoint via foundation_thread_id.
@@ -261,6 +468,7 @@ export default function MetaAdAgentBuilderScreen({
     setTyping(true);
     setStreamingText(null);
     setDraftingAgent(null);
+    setActivity([]);
 
     const webhook_request = buildWebhookRequest({
       task_id: taskId,
@@ -271,27 +479,48 @@ export default function MetaAdAgentBuilderScreen({
     if (webhook_request) {
       sub = subscribeProgress(taskId, (evt) => {
         if (evt.status !== 'success' || !evt.data) return;
-        if (evt.stage === 'meta_ad.diagnosis_html') {
-          const diags = evt.data.diagnoses || [];
-          setLatestDiagnoses(diags);
-          setCanvasSel(defaultDiagnosisSel(diags));
+        const { stage, data } = evt;
+
+        // Every webhook carries a user-facing `success_message` — stream it into the
+        // live activity feed so the user watches each step land (tool calls, lens
+        // pipeline steps, completions), exactly like the email agent's toasts.
+        if (evt.success_message) pushActivity(evt.success_message);
+
+        // Every completion webhook carries the artifact in the SAME value shape the
+        // SSE `done` frame uses, so we reduce webhook + `done` with the same helpers.
+        // Diagnosis / strategy docs stream one at a time — UPSERT each (the list holds
+        // just the one doc that landed) by ad_id (the real id on tune / 'combined') so
+        // an edit of one doc doesn't blank the others.
+        if (stage === 'meta_ad.diagnosis.doc') {
+          setLatestDiagnoses((prev) => (data.diagnoses || []).reduce(upsertDoc, prev));
+          const first = (data.diagnoses || [])[0];
+          if (first) setCanvasSel((cur) => cur || first.ad_id);
           setArtifactSel('diagnosis');
-        } else if (evt.stage === 'meta_ad.competitor_lens_html') {
-          setLatestCompetitorLens(evt.data.html || '');
-          setArtifactSel('competitor_lens');
-        } else if (evt.stage === 'meta_ad.strategy_html') {
-          const strats = evt.data.strategies || [];
-          setLatestStrategy(strats);
-          setStrategyCanvasSel(defaultDiagnosisSel(strats));
+        } else if (stage === 'meta_ad.strategy.doc') {
+          setLatestStrategy((prev) => (data.strategies || []).reduce(upsertDoc, prev));
+          const first = (data.strategies || [])[0];
+          if (first) setStrategyCanvasSel((cur) => cur || first.ad_id);
           setArtifactSel('strategy');
-        } else if (evt.stage === 'meta_ad.creative_draft') {
-          setLatestCreative(evt.data || null);
+        } else if (stage === 'meta_ad.competitor_lens.html') {
+          setLatestCompetitorLens(data.competitor_lens || '');
+          setArtifactSel('competitor_lens');
+        } else if (
+          stage === 'meta_ad.creative.structure' ||
+          stage === 'meta_ad.creative.ad' ||
+          stage === 'meta_ad.creative.image'
+        ) {
+          // All three carry a partial `{campaigns:[...]}` tree — one merge folds a
+          // campaign+ad set batch, a streamed ad, or a rendered image into the draft.
+          setLatestCreative((prev) => mergeCreativeTree(prev, data.campaigns));
           setArtifactSel('creative');
         }
+        // competitor_lens.planning / .search / .filtering / .ads / .analysis are
+        // progress-only — their `success_message` already drove the activity feed above.
       });
     }
 
     let assistantText = '';
+    let lastDrafting = null; // dedupe the SSE node-start activity across loop re-entries
     try {
       for await (const ev of streamMetaAdAgent({
         thread_id: threadId,
@@ -305,14 +534,16 @@ export default function MetaAdAgentBuilderScreen({
         if (ev.type === 'ai_message_token') {
           assistantText += ev.content || '';
           setStreamingText(assistantText);
-        } else if (ev.type === 'diagnosis_drafting') {
-          setDraftingAgent('ad_diagnosis');
-        } else if (ev.type === 'competitor_lens_drafting') {
-          setDraftingAgent('competitor_lens');
-        } else if (ev.type === 'strategy_drafting') {
-          setDraftingAgent('strategy');
-        } else if (ev.type === 'creative_drafting') {
-          setDraftingAgent('creative');
+        } else if (ev.type === 'diagnosis_drafting' || ev.type === 'competitor_lens_drafting' || ev.type === 'strategy_drafting' || ev.type === 'creative_drafting') {
+          // The node-start SSE event marks a section transition (diagnosis → lens →
+          // strategy → creative). Set the loader agent + push a one-line section header
+          // into the activity feed — deduped, since the event re-fires each ReAct loop.
+          const agent = { diagnosis_drafting: 'ad_diagnosis', competitor_lens_drafting: 'competitor_lens', strategy_drafting: 'strategy', creative_drafting: 'creative' }[ev.type];
+          setDraftingAgent(agent);
+          if (lastDrafting !== agent) {
+            pushActivity(`${DRAFTING_LABELS[agent] || 'Working'}…`);
+            lastDrafting = agent;
+          }
         } else if (ev.type === 'done') {
           if (assistantText) {
             setMessages((prev) => [...prev, { role: 'assistant', content: assistantText, time: Date.now() }]);
@@ -447,10 +678,9 @@ export default function MetaAdAgentBuilderScreen({
           <SetupView
             path={path}
             setPath={setPath}
-            adAccountId={adAccountId}
-            setAdAccountId={setAdAccountId}
-            adAccountToken={adAccountToken}
-            setAdAccountToken={setAdAccountToken}
+            accountTabs={ACCOUNT_TABS}
+            accountIdx={accountIdx}
+            setAccountIdx={setAccountIdx}
             initLoading={initLoading}
             initError={initError}
             onStart={handleStart}
@@ -490,8 +720,17 @@ export default function MetaAdAgentBuilderScreen({
                   {streamingText !== null && (
                     <ChatMessageItem message={{ role: 'assistant', content: streamingText, time: null }} streaming />
                   )}
-                  {(typing && !draftingAgent) && <DraftingPill label="Thinking" />}
-                  {draftingAgent && <DraftingPill label={DRAFTING_LABELS[draftingAgent] || 'Working'} />}
+                  {/* While the turn runs, the live activity feed shows each step landing
+                      (SSE node starts + granular webhook messages); before any step has
+                      streamed it falls back to a simple loader pill. */}
+                  {busy && activity.length > 0 ? (
+                    <ActivityFeed items={activity} />
+                  ) : (
+                    <>
+                      {(typing && !draftingAgent) && <DraftingPill label="Thinking" />}
+                      {draftingAgent && <DraftingPill label={DRAFTING_LABELS[draftingAgent] || 'Working'} />}
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -640,13 +879,19 @@ function Stepper({ doneMap, draftingStep, current }) {
 }
 
 // =============================================================
-// Setup view — path choice + credentials
+// Setup view — path choice + account tabs
 // =============================================================
 
 function SetupView({
-  path, setPath, adAccountId, setAdAccountId, adAccountToken, setAdAccountToken,
+  path, setPath, accountTabs, accountIdx, setAccountIdx,
   initLoading, initError, onStart, pdfFile, setPdfFile,
 }) {
+  const noAccount = !!accountTabs[accountIdx]?.noAccount;
+  function pickTab(i) {
+    setAccountIdx(i);
+    // The No-account tab can't tune (no ads to pick) — flip to Create.
+    if (accountTabs[i]?.noAccount && path === 'tune_existing_ads') setPath('create_ads');
+  }
   return (
     <div className="flex-1 overflow-y-auto thin-scroll bg-canvas dark:bg-slate-950">
       <div className="max-w-[760px] mx-auto px-6 py-10">
@@ -661,7 +906,8 @@ function SetupView({
         <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <PathCard
             active={path === 'tune_existing_ads'}
-            onClick={() => setPath('tune_existing_ads')}
+            disabled={noAccount}
+            onClick={() => { if (!noAccount) setPath('tune_existing_ads'); }}
             title="Tune existing ad"
             body="Pick live ads to diagnose together. I find the pattern, name the top and bottom performers, and recommend the fix."
           />
@@ -678,9 +924,36 @@ function SetupView({
             Ad account &amp; brand context
           </div>
           <p className="mt-1.5 text-[11.5px] text-navy-500 dark:text-slate-500 leading-relaxed">
-            Connect your Meta ad account. These credentials are verified in your browser and never leave it.
+            Pick the ad account to run against — credentials stay in the app and never leave it.
+            Choose “No account” to build a campaign from a Blueprint PDF alone.
           </p>
           <div className="mt-4 grid grid-cols-1 gap-4">
+            <Field label="Ad account">
+              <div className="flex flex-wrap gap-2">
+                {accountTabs.map((t, i) => (
+                  <button
+                    key={`${t.label}-${i}`}
+                    type="button"
+                    onClick={() => pickTab(i)}
+                    className={[
+                      'px-3.5 py-2 rounded-lg border text-[13px] font-medium transition',
+                      i === accountIdx
+                        ? 'border-meta-600 bg-meta-50 dark:bg-meta-500/10 text-meta-700 dark:text-meta-300 ring-2 ring-meta-100 dark:ring-meta-500/20'
+                        : 'border-navy-100 dark:border-slate-600 bg-white dark:bg-slate-800 text-navy-700 dark:text-slate-200 hover:border-meta-500',
+                    ].join(' ')}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              {noAccount && (
+                <div className="mt-1.5 text-[11.5px] text-navy-600 dark:text-slate-400">
+                  No ad account will be connected — the diagnosis canvas shows a
+                  no-ad-data notice, and the campaign is built from your Blueprint PDF.
+                </div>
+              )}
+            </Field>
+            {/* Typed-credential gate RETIRED in favor of the account tabs — kept for restore.
             <Field label="Ad account ID">
               <input
                 type="text"
@@ -700,7 +973,8 @@ function SetupView({
                 className="w-full bg-white dark:bg-slate-800 border border-navy-100 dark:border-slate-600 rounded-lg px-3 py-2 text-[13px] text-navy-900 dark:text-slate-100 placeholder:text-navy-400 dark:placeholder:text-slate-500 outline-none focus:border-meta-600 focus:ring-2 focus:ring-meta-100 dark:focus:ring-meta-500/20 transition"
               />
             </Field>
-            <Field label="Brand Blueprint PDF (optional — overrides phase-1)">
+            */}
+            <Field label={noAccount ? 'Brand Blueprint PDF (required — no account connected)' : 'Brand Blueprint PDF (optional — overrides phase-1)'}>
               <input
                 type="file"
                 accept="application/pdf,.pdf"
@@ -737,16 +1011,18 @@ function SetupView({
   );
 }
 
-function PathCard({ active, onClick, title, body }) {
+function PathCard({ active, onClick, title, body, disabled = false }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       className={[
         'text-left rounded-2xl border p-5 transition',
         active
           ? 'border-meta-600 bg-meta-50 dark:bg-meta-500/10 ring-2 ring-meta-100 dark:ring-meta-500/20'
           : 'border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-meta-500',
+        disabled ? 'opacity-50 cursor-not-allowed hover:border-navy-100 dark:hover:border-slate-700' : '',
       ].join(' ')}
     >
       <div className="flex items-center justify-between">
@@ -1011,17 +1287,23 @@ function ArtifactCanvas({
       {effectiveSel === 'creative' ? (
         <CreativeDraftView draft={creative} onUpdate={onUpdate} busy={busy} />
       ) : (
-        <div className="flex-1 overflow-y-auto thin-scroll p-6 flex flex-col items-center gap-4">
-          <div className="w-full max-w-[900px] bg-white dark:bg-slate-900 border border-navy-100 dark:border-slate-700 rounded-2xl shadow-card overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-y-auto thin-scroll p-6 flex flex-col items-center gap-4">
+          {/* The card gets an explicit VIEWPORT-relative height (chain-independent —
+              does not rely on the flex ancestry resolving), and the iframe fills it
+              and scrolls its own content NATIVELY. Native iframe scroll is reliable
+              in every browser — this is what worked at the original fixed height,
+              just responsive to the window instead of a magic number. Offset ≈
+              header(64) + tab bar(48) + padding/gap/details(~108). */}
+          <div className="w-full max-w-[1024px] h-[calc(100vh-220px)] min-h-[360px] bg-white dark:bg-slate-900 border border-navy-100 dark:border-slate-700 rounded-2xl shadow-card overflow-hidden">
             <iframe
               title={`${ARTIFACT_LABELS[effectiveSel]} preview`}
               srcDoc={html}
               sandbox="allow-same-origin"
-              className="block w-full"
-              style={{ height: 1000, border: 0 }}
+              className="block w-full h-full"
+              style={{ border: 0 }}
             />
           </div>
-          <details className="w-full max-w-[900px] rounded-xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900">
+          <details className="w-full max-w-[1024px] shrink-0 rounded-xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900">
             <summary className="cursor-pointer px-4 py-2.5 text-[12.5px] font-semibold text-navy-700 dark:text-slate-200 select-none">
               View raw HTML
             </summary>
@@ -2122,6 +2404,41 @@ function DraftingPill({ label }) {
     <div className="inline-flex items-center gap-2 text-[12.5px] text-navy-600 dark:text-slate-400">
       <span className="h-4 w-4 rounded-full border-2 border-meta-100 border-t-meta-600 animate-spin" />
       {label}…
+    </div>
+  );
+}
+
+// Live "what's happening" feed for the running turn. Shows the recent step messages
+// streamed from the SSE node-start events + every granular webhook (tool calls, lens
+// pipeline steps, artifact completions) — the LATEST line spins (current step), the
+// earlier lines settle to a done check, so the user watches progress land in real time.
+function ActivityFeed({ items }) {
+  if (!items || !items.length) return null;
+  const recent = items.slice(-6);
+  return (
+    <div className="flex flex-col gap-1.5">
+      {recent.map((text, i) => {
+        const isLast = i === recent.length - 1;
+        return (
+          <div
+            key={`${i}-${text}`}
+            className={`inline-flex items-center gap-2 text-[12.5px] ${
+              isLast ? 'text-navy-700 dark:text-slate-200' : 'text-navy-400 dark:text-slate-500'
+            }`}
+          >
+            {isLast ? (
+              <span className="h-3.5 w-3.5 shrink-0 rounded-full border-2 border-meta-100 border-t-meta-600 animate-spin" />
+            ) : (
+              <span className="h-3.5 w-3.5 shrink-0 inline-flex items-center justify-center text-meta-500">
+                <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.4">
+                  <path d="M3.5 8.5l3 3 6-7" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
+            )}
+            <span>{text}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

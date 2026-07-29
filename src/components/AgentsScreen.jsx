@@ -11,6 +11,7 @@ import {
   IconCheck,
   IconClock,
   IconSparkle,
+  IconCompass,
 } from './icons.jsx';
 
 const AGENTS = [
@@ -36,6 +37,18 @@ const AGENTS = [
     status: 'active',
     statKey: 'Ad Accounts',
     statValue: 1,
+    enabled: true,
+  },
+  {
+    id: 'pdp_agent',
+    name: 'PDP Agent',
+    description: 'Audit a product page against search, AI assistants, shopping agents, buyers and platform rules',
+    icon: IconCompass,
+    iconBg: 'bg-violet-50 dark:bg-violet-500/10',
+    iconColor: 'text-violet-500 dark:text-violet-400',
+    status: 'active',
+    statKey: 'Audit Areas',
+    statValue: 6,
     enabled: true,
   },
   {

@@ -6,6 +6,7 @@ import ChatScreen from './components/ChatScreen.jsx';
 import AgentsScreen from './components/AgentsScreen.jsx';
 import EmailAgentBuilderScreen from './components/EmailAgentBuilderScreen.jsx';
 import MetaAdAgentBuilderScreen from './components/MetaAdAgentBuilderScreen.jsx';
+import PdpAgentScreen from './components/PdpAgentScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import { initChat } from './lib/api.js';
 import { initEmailAgentWithPdf } from './lib/emailAgentApi.js';
@@ -16,12 +17,14 @@ import { subscribeProgress, buildWebhookRequest } from './lib/webhookBus.js';
 const PDF_FLOW_PROJECT_NAME = 'Company Name';
 
 // Map sidebar slugs ↔ App view names. Sidebar emits 'foundations' |
-// 'execution' | 'email_agent'; the App's view state uses the same three
-// values plus 'agents' (the agent-grid landing inside Execution).
+// 'execution' | 'email_agent' | 'meta_ad_agent' | 'pdp_agent'; the App's view
+// state uses the same values plus 'agents' (the agent-grid landing inside
+// Execution).
 function viewFromSidebar(slug) {
   if (slug === 'foundations') return 'foundations';
   if (slug === 'email_agent') return 'email_agent';
   if (slug === 'meta_ad_agent') return 'meta_ad_agent';
+  if (slug === 'pdp_agent') return 'pdp_agent';
   if (slug === 'execution') return 'agents';
   return 'foundations';
 }
@@ -30,6 +33,7 @@ function sidebarFromView(view) {
   if (view === 'foundations') return 'foundations';
   if (view === 'email_agent') return 'email_agent';
   if (view === 'meta_ad_agent') return 'meta_ad_agent';
+  if (view === 'pdp_agent') return 'pdp_agent';
   return 'execution';
 }
 
@@ -39,11 +43,12 @@ function newThreadId() {
 }
 
 export default function App() {
-  const [stage, setStage] = useState('landing'); // 'landing' | 'onboarding' | 'chat' | 'meta_ad'
+  const [stage, setStage] = useState('landing'); // 'landing' | 'onboarding' | 'chat' | 'meta_ad' | 'pdp'
   // Which campaign type the user picked on the first screen.
   //   null      → show the CampaignChooser
   //   'email'   → the Email Campaign landing/flow
   //   'meta_ad' → the standalone Meta Ad Agent (stage becomes 'meta_ad')
+  //   'pdp'     → the standalone PDP Agent (stage becomes 'pdp')
   const [campaign, setCampaign] = useState(null);
   // Thread id for the standalone Meta Ad flow (no email/foundation session
   // backs it — the Meta Ad agent self-inits from ad-account creds / PDF).
@@ -94,6 +99,13 @@ export default function App() {
       setMetaThreadId(newThreadId());
       setCampaign('meta_ad');
       setStage('meta_ad');
+      return;
+    }
+    if (type === 'pdp') {
+      // No thread id to seed: the PDP screen mints its own, because one PDP
+      // thread covers exactly one product and its init inputs are immutable.
+      setCampaign('pdp');
+      setStage('pdp');
       return;
     }
     setCampaign('email'); // stays on the 'landing' stage → EmailLanding
@@ -202,6 +214,7 @@ export default function App() {
               onSelectAgent={(id) => {
                 if (id === 'email_marketing') setView('email_agent');
                 if (id === 'meta_ad_agent') setView('meta_ad_agent');
+                if (id === 'pdp_agent') setView('pdp_agent');
               }}
             />
           </div>
@@ -232,6 +245,20 @@ export default function App() {
             onNewProject={handleNewProject}
           />
         </div>
+        <div className={view === 'pdp_agent' ? 'h-screen' : 'hidden'}>
+          {/* The PDP screen mints its own product thread — the session thread is
+              passed only as the Foundation thread the brand context loads from.
+              In the PDF flow there is NO phase-1 checkpoint behind that id, so it
+              is withheld and the screen asks for a Blueprint PDF instead. */}
+          <PdpAgentScreen
+            foundationThreadId={pdfFlow ? undefined : initResult.thread_id}
+            onBack={() => setView('agents')}
+            onSelectView={handleSidebar}
+            projectName={projectName}
+            onNewProject={handleNewProject}
+            hideFoundation={pdfFlow}
+          />
+        </div>
       </>
     );
   }
@@ -251,6 +278,25 @@ export default function App() {
         }}
         hideFoundation
         projectName="Meta Ad Campaign"
+        onNewProject={handleNewProject}
+      />
+    );
+  }
+
+  // Standalone product audit — picked from the chooser, no email/foundation
+  // session. The screen's setup form asks for brand context: an uploaded Company
+  // Blueprint PDF, or the id of a project that already built one.
+  if (stage === 'pdp') {
+    return (
+      <PdpAgentScreen
+        onBack={handleNewProject}
+        onSelectView={(slug) => {
+          // No shared project session here; any non-PDP nav target starts a fresh
+          // campaign from the chooser/landing instead.
+          if (slug !== 'pdp_agent') handleNewProject();
+        }}
+        hideFoundation
+        projectName="Product Page Audit"
         onNewProject={handleNewProject}
       />
     );

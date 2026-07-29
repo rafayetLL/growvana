@@ -11,6 +11,7 @@ import {
   IconPlus,
   IconMail,
   IconTarget,
+  IconCompass,
 } from './icons.jsx';
 import { useTheme } from '../lib/theme.js';
 
@@ -98,6 +99,21 @@ export default function Sidebar({
             className="ml-7 mt-0.5 flex items-center gap-2 px-3 py-1.5 rounded-md text-[12.5px] font-medium bg-brand-50 dark:bg-brand-500/10 text-brand-700 dark:text-brand-500 border-l-2 border-brand-500"
           >
             Ad Workbench
+          </button>
+        )}
+        <NavItem
+          icon={<IconCompass />}
+          label="PDP Agent"
+          active={activeView === 'pdp_agent'}
+          onClick={() => onSelectView?.('pdp_agent')}
+        />
+        {activeView === 'pdp_agent' && (
+          <button
+            type="button"
+            onClick={() => onSelectView?.('pdp_agent')}
+            className="ml-7 mt-0.5 flex items-center gap-2 px-3 py-1.5 rounded-md text-[12.5px] font-medium bg-brand-50 dark:bg-brand-500/10 text-brand-700 dark:text-brand-500 border-l-2 border-brand-500"
+          >
+            Product Audit
           </button>
         )}
       </nav>
