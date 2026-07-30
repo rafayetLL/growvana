@@ -79,25 +79,21 @@ const AUDIT_AREAS = [
 ];
 const AREA_BY_KEY = Object.fromEntries(AUDIT_AREAS.map((a) => [a.key, a]));
 
-// The fixed specialist arc. The Auditor and the Strategist are built; Scout and
-// Studio are graph stubs the CMO declines to route to, so their tabs say so rather
-// than pretending.
+// The fixed specialist arc. ALL FOUR are built now — the Studio was the last, and
+// it is the only one that MAKES something rather than describing it.
 const SPECIALISTS = [
   { key: 'auditor', label: 'Auditor', blurb: 'Audits how your product is presented, area by area.' },
   { key: 'scout', label: 'Scout', blurb: 'Reads the pages you are actually losing to.' },
   { key: 'strategist', label: 'Strategist', blurb: 'Turns the audit into what your page should say and show.' },
-  { key: 'studio', label: 'Studio', blurb: 'Builds the page and the shots it needs.' },
+  { key: 'studio', label: 'Studio', blurb: 'Writes the page and makes the pictures it needs.' },
 ];
-const LIVE_SPECIALISTS = new Set(['auditor', 'scout', 'strategist']);
+const LIVE_SPECIALISTS = new Set(['auditor', 'scout', 'strategist', 'studio']);
 
-// Keys that live INSIDE the audit payload but are not audit areas: `html` is the
-// whole audit rendered as one document. Without this, the report would treat it as
-// a fifth area and try to render a 30KB string as findings.
+// RETIRED 2026-07-30 — `AUDIT_META_KEYS`. It separated `html` from the area keys
+// inside the audit payload, back when that payload held both. `done.audit` is now
+// `{ html }` and nothing else, so there is no area key to tell it apart from.
 //
-// `image` — the rasterized PNG the CMO and Strategist look at — never reaches the
-// wire at all; the backend strips it. It is listed anyway so that a backend that
-// ever stopped stripping it degrades to "ignored" rather than "rendered raw".
-const AUDIT_META_KEYS = new Set(['html', 'image']);
+// const AUDIT_META_KEYS = new Set(['html', 'image']);
 
 // Only two, and that is the whole set the backend accepts. The platform decides
 // how the page is READ — Amazon structurally through its listing fields,
@@ -111,39 +107,138 @@ const PLATFORMS = [
 const PLATFORM_LABELS = Object.fromEntries(PLATFORMS.map((p) => [p.key, p.label]));
 
 // ---------------------------------------------------------------------------
-// The one audit reducer. A `pdp.audit.<area>` webhook's `data` and the SSE `done`
-// frame's `audit` are the SAME value shape — an object keyed by area name — so
-// both fold in here (the shape contract the backend holds deliberately).
+// RETIRED 2026-07-30 — `mergeAudit`. The audit is no longer a per-area object on
+// the wire: `done.audit` is `{ html }`, the four areas composed into one rendered
+// page, so it REPLACES exactly as the strategy, the scout and the content do.
 //
-// Two rules, both load-bearing:
-//   - a null/absent `audit` on `done` means UNCHANGED, never cleared;
-//   - a null FIELD means that area has not been audited, so it must not overwrite
-//     an area that already landed. Merging per key is what makes re-running one
-//     area leave the other three exactly as they were, mirroring the backend's own
-//     per-field reducer on state.
+// The areas' own output — three markdown documents and the Images judgement — is
+// backend-internal now. It feeds the HTML render and each area's own next pass,
+// and reaches nothing else. So there is no per-area value left to merge, and no
+// reducer needed to stop one area clobbering another.
 //
-// It also carries `html` — the whole audit as one rendered document — which folds
-// in by the same rule and needs no special case here. Only the READERS have to
-// know it is not an area (see AUDIT_META_KEYS).
+// The `pdp.audit.<area>` webhooks still fire, but they are progress EVENTS
+// carrying `{ area }` and no content — see `auditAreas` below.
+//
+// The one rule that survives, unchanged and still load-bearing: a null/absent
+// `audit` on `done` means UNCHANGED, never cleared.
+//
+// function mergeAudit(prev, incoming) {
+//   if (!incoming || typeof incoming !== 'object') return prev;
+//   const next = { ...(prev || {}) };
+//   for (const [area, value] of Object.entries(incoming)) {
+//     if (value != null) next[area] = value;
+//   }
+//   return next;
+// }
 // ---------------------------------------------------------------------------
-function mergeAudit(prev, incoming) {
-  if (!incoming || typeof incoming !== 'object') return prev;
-  const next = { ...(prev || {}) };
-  for (const [area, value] of Object.entries(incoming)) {
-    if (value != null) next[area] = value;
+
+// ---------------------------------------------------------------------------
+// The Studio's image reducer. `pdp.studio.image` ships ONE picture — the path down
+// to the one new version, carrying its set's key, category and ratio — so a
+// receiver that has never seen that set can create it from the webhook alone. That
+// makes this a MERGE, per set and then per slot, unlike `done.content` and
+// `done.scout`, which replace.
+//
+// Two rules it exists to hold:
+//   - versions are APPEND-ONLY on the backend, so a slot's incoming versions are
+//     concatenated by version NUMBER rather than replacing what is there — a
+//     webhook carrying v2 must not wipe the v1 already on screen;
+//   - a set or slot the incoming payload does not mention is left exactly as it
+//     was, which is what lets six pictures arrive one at a time over minutes and
+//     accumulate rather than each one blanking the last.
+//
+// The `done` frame carries the WHOLE artifact and so replaces outright — it is
+// authoritative, and backfills anything a missed webhook lost.
+// ---------------------------------------------------------------------------
+function mergeImageSets(prev, incoming) {
+  if (!incoming || !Array.isArray(incoming.sets)) return prev;
+  const bySetKey = new Map((prev?.sets || []).map((s) => [s.set_key, s]));
+
+  for (const incomingSet of incoming.sets) {
+    const existing = bySetKey.get(incomingSet.set_key);
+    if (!existing) {
+      bySetKey.set(incomingSet.set_key, incomingSet);
+      continue;
+    }
+    const bySlotKey = new Map((existing.slots || []).map((s) => [s.slot_key, s]));
+    for (const incomingSlot of incomingSet.slots || []) {
+      const priorSlot = bySlotKey.get(incomingSlot.slot_key);
+      if (!priorSlot) {
+        bySlotKey.set(incomingSlot.slot_key, incomingSlot);
+        continue;
+      }
+      // Merge takes by version number. A webhook re-sending a version already held
+      // replaces that one entry rather than duplicating it.
+      const byVersion = new Map((priorSlot.versions || []).map((v) => [v.version, v]));
+      for (const v of incomingSlot.versions || []) byVersion.set(v.version, v);
+      bySlotKey.set(incomingSlot.slot_key, {
+        ...priorSlot,
+        ...incomingSlot,
+        versions: [...byVersion.values()].sort((a, b) => a.version - b.version),
+      });
+    }
+    bySetKey.set(incomingSet.set_key, {
+      ...existing,
+      ...incomingSet,
+      slots: [...bySlotKey.values()],
+    });
   }
-  return next;
+  return { sets: [...bySetKey.values()] };
 }
 
-// Every area present in the audit, in roster order, with anything unrecognised
-// appended — so an area shipped by the backend ahead of this file still shows up.
-function areaKeys(audit) {
-  const known = AUDIT_AREAS.map((a) => a.key);
-  const extra = Object.keys(audit || {}).filter(
-    (k) => !known.includes(k) && !AUDIT_META_KEYS.has(k),
-  );
-  return [...known, ...extra];
+// The newest take of a picture — the one to show. Versions are append-only and the
+// backend numbers them from 1, but this sorts rather than trusting array order,
+// because the webhook and the done frame can deliver them in different orders.
+function currentVersion(slot) {
+  const versions = slot?.versions || [];
+  if (!versions.length) return null;
+  return versions.reduce((a, b) => (b.version > a.version ? b : a));
 }
+
+// What to put in an <img> for one take. Prefer the real URL where there is one —
+// it is the product's own photograph and the browser caches it — and fall back to
+// the inlined bytes, which is the ONLY source for a generated picture and the
+// safety net for a merchant CDN url that has since expired.
+function versionSrc(version) {
+  if (!version) return null;
+  return version.url || version.data_uri || null;
+}
+
+// Sets grouped by category, preserving first-seen order. One category legitimately
+// spans SEVERAL sets — a gallery whose photographs are not all the same shape is
+// one gallery across one set per shape — so without this a founder sees their
+// single gallery split into two unexplained groups.
+function setsByCategory(imageSets) {
+  const groups = [];
+  const byName = new Map();
+  for (const set of imageSets?.sets || []) {
+    const name = (set.category || '').trim() || 'Images';
+    if (!byName.has(name)) {
+      const group = { category: name, sets: [] };
+      byName.set(name, group);
+      groups.push(group);
+    }
+    byName.get(name).sets.push(set);
+  }
+  return groups;
+}
+
+// RETIRED 2026-07-30 — `areaKeys`. It walked the audit payload's area keys, in
+// roster order, unioning in anything unrecognised so an area shipped ahead of this
+// file still rendered. There are no area keys on the wire any more.
+//
+// What replaced its one surviving job — knowing which areas have landed, for the
+// progress line while the audit is still running — is `auditAreas`, a set fed by
+// the `pdp.audit.<area>` webhooks. Those name their area in `data.area`, so the
+// roster still needs no hardcoding here and a fifth area still needs no change.
+//
+// function areaKeys(audit) {
+//   const known = AUDIT_AREAS.map((a) => a.key);
+//   const extra = Object.keys(audit || {}).filter(
+//     (k) => !known.includes(k) && !AUDIT_META_KEYS.has(k),
+//   );
+//   return [...known, ...extra];
+// }
 
 const humanize = (key) =>
   String(key).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
@@ -239,11 +334,18 @@ export default function PdpAgentScreen({
     if (text) setActivity((prev) => (prev[prev.length - 1] === text ? prev : [...prev, text].slice(-40)));
   };
 
+  // `{ html }` — the four areas composed into ONE rendered page. Replaced whole,
+  // like every other artifact here: the areas' own output is backend-internal and
+  // never reaches this screen, so there is nothing to merge per key any more.
   const [audit, setAudit] = useState(null);
-  // The strategy is ONE document rewritten whole, so it replaces rather than
-  // merges — the opposite of the audit, whose areas land independently and must
-  // fold per key. `{markdown, html}`; `html` can lag the markdown by exactly one
-  // failed render, which is why both are kept.
+  // Which areas have ANNOUNCED themselves this session, from the
+  // `pdp.audit.<area>` progress webhooks. Content-free — the areas finish minutes
+  // apart and this is what lets the canvas say "2 of 4 so far" while the page
+  // itself is still being composed. It deliberately does not clear between turns:
+  // an area audited earlier is still covered by the page.
+  const [auditAreas, setAuditAreas] = useState(() => new Set());
+  // The strategy is ONE document written whole in a single call — `{ html }`, the
+  // page itself, with no markdown source it could disagree with.
   const [strategy, setStrategy] = useState(null);
   // The competitor field. Replaced whole on every Scout run, like the strategy and
   // unlike the audit: a run maps the field as it stands today, and half of one run
@@ -251,6 +353,13 @@ export default function PdpAgentScreen({
   // `{analysis, html, queries, product_count}` — no `image`, because the Scout
   // reaches the models as text and the page is built server-side in Python.
   const [scout, setScout] = useState(null);
+  // The Studio's two artifacts, and they are INDEPENDENT — a turn routinely
+  // produces one without the other, so they are two pieces of state rather than
+  // one. `content` is a container with exactly one populated side (`amazon` |
+  // `generic`), replaced whole. `image_sets` MERGES from the per-picture webhooks
+  // as each one lands, and is replaced whole by the authoritative `done` frame.
+  const [content, setContent] = useState(null);
+  const [imageSets, setImageSets] = useState(null);
   // Opens on the Auditor — the first specialist in the arc, and now the first tab.
   const [canvasSel, setCanvasSel] = useState('auditor'); // a specialist key
   // Set the moment the founder touches the canvas. The areas land one at a time
@@ -273,7 +382,10 @@ export default function PdpAgentScreen({
   const scrollRef = useRef(null);
 
   const busy = typing || streamingText !== null;
-  const auditedAreas = areaKeys(audit).filter((k) => audit?.[k]);
+  // The arc's Auditor step ticks on the PAGE existing, not on an area having
+  // announced itself: an area webhook can arrive from a pass whose render then
+  // failed, and a step ticked with nothing on the canvas reads as a bug.
+  const hasAudit = Boolean(audit?.html);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -425,12 +537,39 @@ export default function PdpAgentScreen({
           }
           return;
         }
+        // The Studio's words — one document, so a plain assignment like the
+        // scout's rather than a merge.
+        if (stage === 'pdp.studio.content') {
+          if (data.content) {
+            setContent(data.content);
+            if (!canvasTouchedRef.current) setCanvasSel('studio');
+          }
+          return;
+        }
+        // The Studio's pictures — ONE picture per webhook, arriving over several
+        // minutes, so this MERGES. Without it each new picture would blank the
+        // ones already on screen.
+        if (stage === 'pdp.studio.image') {
+          if (data.image_sets) {
+            setImageSets((prev) => mergeImageSets(prev, data.image_sets));
+            if (!canvasTouchedRef.current) setCanvasSel('studio');
+          }
+          return;
+        }
+        // `pdp.studio.tool_call` is progress only; its message already fed the feed.
+        if (stage === 'pdp.studio.tool_call') return;
         // `pdp.audit.tool_call` is progress only; its message already fed the feed.
         if (!stage || !stage.startsWith('pdp.audit.') || stage === 'pdp.audit.tool_call') return;
-        // Everything else in that family is ONE finished area, and its `data` is a
-        // partial of the `done` frame's `audit` — same reducer, no special-casing
-        // per area, so a seventh needs nothing here.
-        setAudit((prev) => mergeAudit(prev, data));
+        // Everything else in that family is ONE finished area — a progress EVENT,
+        // carrying `{ area }` and no content. The area's own output never leaves
+        // the backend; the composed page arrives on `done`. So all this records is
+        // that the area landed, which is what drives the "N of 4" line while the
+        // others are still running.
+        //
+        // The area names itself in the payload, so a fifth area needs nothing here
+        // — the same property the old per-key reducer had, for the same reason.
+        const area = data?.area;
+        if (area) setAuditAreas((prev) => (prev.has(area) ? prev : new Set(prev).add(area)));
         // There is nothing to select WITHIN the audit — it is one report — so a
         // landing area only ever decides which TAB is showing. (This used to also
         // call `setAreaSel`, which was removed with the per-area chips and left a
@@ -473,6 +612,12 @@ export default function PdpAgentScreen({
           // there is no second pass this could fire on.
           setResearching(true);
           pushActivity('Writing your page strategy…');
+        } else if (ev.type === 'studio_working') {
+          // Once per turn, not once per ReAct loop pass. The second-slowest step
+          // after the Scout — a batch of images renders for minutes — so the line
+          // says so rather than letting it read as a stall.
+          setResearching(true);
+          pushActivity('Building your page — images take a few minutes…');
         } else if (ev.type === 'done') {
           if (assistantText) {
             setMessages((prev) => [
@@ -481,11 +626,11 @@ export default function PdpAgentScreen({
             ]);
             committed = true;
           }
-          // Authoritative, and it carries every area researched so far — so a
-          // missed area webhook is backfilled here. A null audit means NOTHING
-          // MOVED this turn; keep what is already on the canvas.
+          // Authoritative, and it is the WHOLE audit — every area audited so far
+          // composed into one page, so a missed progress webhook costs nothing.
+          // A null audit means NOTHING MOVED this turn; keep what is on the canvas.
           if (ev.audit) {
-            setAudit((prev) => mergeAudit(prev, ev.audit));
+            setAudit(ev.audit);
             if (!canvasTouchedRef.current) setCanvasSel('auditor');
           }
           // Same rule, one artifact: null means the strategy did not move this
@@ -505,6 +650,23 @@ export default function PdpAgentScreen({
           if (ev.strategy) {
             setStrategy(ev.strategy);
             if (!canvasTouchedRef.current) setCanvasSel('strategist');
+          }
+          // The Studio's two, LAST in the arc — so they win the canvas over
+          // everything before them on a turn that ran several specialists, by the
+          // same rule that puts the strategy ahead of the audit.
+          //
+          // Both REPLACE here rather than merging: this frame is authoritative and
+          // carries the whole artifact, which is what backfills anything a missed
+          // per-picture webhook lost. The merge is only for those webhooks.
+          //
+          // Each is null when the Studio did not run — never "clear it".
+          if (ev.content) {
+            setContent(ev.content);
+            if (!canvasTouchedRef.current) setCanvasSel('studio');
+          }
+          if (ev.image_sets) {
+            setImageSets(ev.image_sets);
+            if (!canvasTouchedRef.current) setCanvasSel('studio');
           }
         } else if (ev.type === 'error') {
           setTurnError(ev.message || 'Something went wrong and this reply did not finish.');
@@ -584,9 +746,13 @@ export default function PdpAgentScreen({
           platform={platform}
           researching={researching}
           landed={{
-            auditor: auditedAreas.length > 0,
+            auditor: hasAudit,
             scout: Boolean(scout?.html),
-            strategist: Boolean(strategy?.markdown),
+            strategist: Boolean(strategy?.html),
+            // Either artifact counts — the Studio genuinely produces one without
+            // the other, so requiring both would leave the step unticked on a turn
+            // that only made pictures.
+            studio: Boolean(content?.amazon || content?.generic || imageSets?.sets?.length),
           }}
           current={canvasSel}
         />
@@ -689,8 +855,11 @@ export default function PdpAgentScreen({
             <div className="flex-1 flex flex-col min-w-0 bg-canvas dark:bg-slate-950">
               <Canvas
                 audit={audit}
+                auditAreas={auditAreas}
                 strategy={strategy}
                 scout={scout}
+                content={content}
+                imageSets={imageSets}
                 canvasSel={canvasSel}
                 onPickCanvas={pickCanvas}
                 researching={researching}
@@ -746,10 +915,18 @@ function Header({ onBack, phase, platform, researching, landed, current }) {
 }
 
 // The arc is fixed — Auditor → Scout → Strategist → Studio — and only the first is
-// built. The rest stay visibly ahead so the founder can see where this is going.
-// `landed` is per-specialist, not one flag. With two live specialists a single
-// `hasAudit` would tick the Strategist the moment the AUDIT came back, telling the
-// founder a plan exists when none had been written.
+// built — ALL FOUR are, since the Studio landed.
+//
+// `landed` is per-specialist, not one flag. That mattered from the moment there
+// were two: a single `hasAudit` ticked the Strategist as soon as the AUDIT came
+// back, telling a founder a plan existed when none had been written. With four it
+// matters more, and the Studio's entry is deliberately an OR over its two artifacts
+// — it genuinely produces pictures without content, or content without pictures.
+//
+// `LIVE_SPECIALISTS` now holds every key, so `live` is always true. It is kept
+// rather than removed: it is the one line that would need editing if a FIFTH
+// specialist were added ahead of its implementation, which is exactly how the
+// Scout, the Strategist and the Studio each shipped.
 function ArcStepper({ researching, landed, current }) {
   return (
     <div className="flex items-center">
@@ -1148,21 +1325,25 @@ function Field({ label, children }) {
 // =============================================================
 // Canvas — the captured product, then the audit and the strategy as they land.
 //
-// **This screen now renders HTML documents.** It used to be the one agent screen
-// with no iframe, because the workflow produced JSON only. Both artifacts are now
-// composed into self-contained HTML by the backend — the audit in `auditor_cleanup`,
-// the strategy in `turn_recap` — so each is shown in a sandboxed iframe, the same
-// way the Meta Ad screen shows its documents.
+// **Every artifact on this screen is an HTML document** (2026-07-30). The audit is
+// composed in `auditor_cleanup`, the strategy is written directly as a page by the
+// Strategist's single call, and the Scout's is built server-side in Python. Each
+// renders in a sandboxed iframe, the same way the Meta Ad screen shows its docs.
 //
-// The raw values are still carried and still rendered as a FALLBACK. A render is
-// one model call and it can fail; when it does, the backend keeps the previous
-// HTML rather than blanking it, and on the very first audit there is no previous
-// one. Falling back to the areas means a failed render costs presentation, never
-// the findings themselves.
+// **There are no fallbacks left, and none are possible.** The raw values used to
+// ride the wire beside the markup so a failed render cost presentation rather than
+// content. They no longer reach this screen at all: the audit's four areas are
+// backend-internal, and the strategy has no markdown source to fall back to now
+// that one call writes the page itself.
+//
+// What covers a failed render instead is the backend keeping the PREVIOUS document
+// rather than blanking it — one turn stale, repaired by the next turn that moves
+// the artifact. The only uncovered case is a render that fails on the very first
+// pass, where the canvas simply stays empty and the recap says what happened.
 // =============================================================
 
 function Canvas({
-  audit, strategy, scout, canvasSel, onPickCanvas, researching,
+  audit, auditAreas, strategy, scout, content, imageSets, canvasSel, onPickCanvas, researching,
 }) {
   // The captured product, then the whole four-specialist arc — three of the four
   // are live, and the arc is shown in full so a founder can see where this goes.
@@ -1201,11 +1382,13 @@ function Canvas({
 
       <div className="flex-1 min-h-0 overflow-y-auto thin-scroll">
         {canvasSel === 'auditor' ? (
-          <AuditView audit={audit} researching={researching} />
+          <AuditView audit={audit} areas={auditAreas} researching={researching} />
         ) : canvasSel === 'scout' ? (
           <ScoutView scout={scout} researching={researching} />
         ) : canvasSel === 'strategist' ? (
           <StrategyView strategy={strategy} researching={researching} />
+        ) : canvasSel === 'studio' ? (
+          <StudioView content={content} imageSets={imageSets} researching={researching} />
         ) : (
           <SpecialistStub sel={canvasSel} />
         )}
@@ -1355,6 +1538,10 @@ function GapAnswersPanel({ questions }) {
   );
 }
 
+// UNREACHABLE while all four specialists are built — every `canvasSel` now has a
+// view of its own. Kept as the canvas switch's final fallback, because that is the
+// branch a FIFTH specialist lands in on the day its tab ships ahead of its screen,
+// and an unhandled key would otherwise render a blank canvas with no explanation.
 function SpecialistStub({ sel }) {
   const entry = SPECIALISTS.find((s) => s.key === sel);
   if (!entry) return null;
@@ -1452,9 +1639,8 @@ function CanvasEmpty({ busy, busyTitle, busyBody, idleTitle, idleBody }) {
 // select inside it.
 function StrategyView({ strategy, researching }) {
   const html = strategy?.html;
-  const markdown = strategy?.markdown;
 
-  if (!html && !markdown) {
+  if (!html) {
     return (
       <CanvasEmpty
         busy={researching}
@@ -1466,28 +1652,22 @@ function StrategyView({ strategy, researching }) {
     );
   }
 
-  // The HTML is the intended view. The markdown fallback covers the turn where a
-  // render failed — the plan is what matters, not its typography.
-  if (html) return <HtmlDoc html={html} title="Page strategy" />;
-  return (
-    <div className="p-6 max-w-[1024px] mx-auto">
-      <div className="rounded-2xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-card p-6">
-        <Markdown text={markdown} />
-      </div>
-    </div>
-  );
+  // HTML only. The Strategist writes the page directly in ONE call, so there is no
+  // markdown source to fall back to — a failed call leaves the PREVIOUS page
+  // standing rather than producing a document this screen would have to render.
+  return <HtmlDoc html={html} title="Page strategy" />;
 }
 
 // The competitor field — what the products winning this category do with their
 // pages. ONE document rewritten whole on every Scout run, exactly like the
 // strategy, so there is nothing to merge and nothing to select inside it.
 //
-// **HTML only, with no per-field fallback — deliberately unlike `AuditView` and
-// `StrategyView`.** Those two carry one because their HTML is composed by a MODEL
-// and one failed render would otherwise blank the page. The Scout's is built
-// server-side in Python by `pdp_scout_builder` / `pdp_scout_pdp_builder`, which is
-// also why every figure on it is computed rather than typed: there is no render
-// call to fail, so a fallback here would be code that can never run.
+// **HTML only, like `AuditView` and `StrategyView`** — all three are now, since the
+// values behind those two stopped reaching this screen. The Scout was the first,
+// and for a different reason worth keeping straight: its page is built server-side
+// in Python by `pdp_scout_builder` / `pdp_scout_pdp_builder`, which is also why
+// every figure on it is computed rather than typed. There is no render call to
+// fail here at all, where the other two have one that can.
 //
 // `scout.analysis` still rides the wire — it is what the CMO and the Strategist
 // read as a text digest — it simply is not a second rendering of this page.
@@ -1509,44 +1689,437 @@ function ScoutView({ scout, researching }) {
   return <HtmlDoc html={html} title="Competitor field" />;
 }
 
-function AuditView({ audit, researching }) {
-  const landed = areaKeys(audit).filter((k) => audit?.[k]);
+// =============================================================
+// The Studio — the page a founder actually publishes.
+//
+// TWO artifacts, shown as two sections of one scroll rather than two tabs: the
+// words and the pictures are independent, but they are one deliverable and a
+// founder reads them together.
+//
+// This is the only view whose content a founder COPIES rather than reads, so every
+// copyable string sits in a block with a copy button and nothing reformats it.
+// =============================================================
+
+function CopyButton({ text, label = 'Copy' }) {
+  const [done, setDone] = useState(false);
+  if (!text) return null;
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setDone(true);
+          setTimeout(() => setDone(false), 1400);
+        } catch {
+          /* clipboard blocked (insecure origin / denied) — the text is on screen
+             and selectable either way, so this stays silent rather than throwing
+             an error at a founder for something they did not do. */
+        }
+      }}
+      className="shrink-0 px-2 py-1 rounded-md text-[11px] font-medium text-meta-700 dark:text-meta-500 bg-meta-50 dark:bg-meta-500/10 hover:bg-meta-100 dark:hover:bg-meta-500/20 transition"
+    >
+      {done ? 'Copied' : label}
+    </button>
+  );
+}
+
+// One copyable field: its name, the words, and a copy button.
+function CopyField({ label, value, mono = false }) {
+  if (isBlank(value)) return null;
+  return (
+    <div className="py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-navy-500 dark:text-slate-400">
+          {label}
+        </div>
+        <CopyButton text={value} />
+      </div>
+      <div
+        className={[
+          'mt-1.5 text-[13px] text-navy-900 dark:text-slate-100 leading-relaxed whitespace-pre-wrap break-words',
+          mono ? 'font-mono text-[12px]' : '',
+        ].join(' ')}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+// Name/value rows — a spec table, an FAQ, the metadata properties. One renderer,
+// because the backend deliberately gives all three the same shape.
+function PairRows({ pairs }) {
+  if (!pairs?.length) return null;
+  return (
+    <dl className="mt-2 divide-y divide-navy-100 dark:divide-slate-800 border-y border-navy-100 dark:border-slate-800">
+      {pairs.map((p, i) => (
+        <div key={`${p.name}-${i}`} className="py-2 grid grid-cols-[minmax(0,180px)_1fr] gap-3">
+          <dt className="text-[12px] font-medium text-navy-600 dark:text-slate-400 break-words">
+            {p.name}
+          </dt>
+          <dd className="text-[12.5px] text-navy-900 dark:text-slate-100 whitespace-pre-wrap break-words">
+            {p.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+// THE RECURSIVE BLOCK RENDERER — the one genuinely new piece of rendering here.
+//
+// A block declares `kind`, and that names which single slot carries its value:
+// 'str' → text, 'list' → items, 'pairs' → pairs, 'dict' → blocks. Only 'dict'
+// nests, and it nests WITHOUT LIMIT, so this recurses rather than handling a fixed
+// depth. Indentation is capped so a deeply nested page does not walk off the right
+// edge; the heading hierarchy carries the structure past that point.
+function ContentBlock({ block, depth = 0 }) {
+  if (!block) return null;
+  const heading = block.label || humanize(block.field);
+  const pad = Math.min(depth, 3) * 12;
+
+  return (
+    <div style={{ paddingLeft: pad }} className={depth > 0 ? 'mt-3' : 'mt-4'}>
+      <div className="flex items-start justify-between gap-3">
+        <div
+          className={[
+            'font-display font-semibold text-navy-900 dark:text-slate-100',
+            depth === 0 ? 'text-[14px]' : 'text-[12.5px]',
+          ].join(' ')}
+        >
+          {heading}
+        </div>
+        {block.kind === 'str' && <CopyButton text={block.text} />}
+        {block.kind === 'list' && <CopyButton text={(block.items || []).join('\n')} />}
+      </div>
+
+      {block.kind === 'str' && !isBlank(block.text) && (
+        <div className="mt-1.5 text-[13px] text-navy-800 dark:text-slate-200 leading-relaxed whitespace-pre-wrap break-words">
+          {block.text}
+        </div>
+      )}
+
+      {block.kind === 'list' && !!block.items?.length && (
+        <ul className="mt-1.5 list-disc pl-5 space-y-1 text-[13px] text-navy-800 dark:text-slate-200 leading-relaxed">
+          {block.items.map((item, i) => (
+            <li key={i} className="break-words">{item}</li>
+          ))}
+        </ul>
+      )}
+
+      {block.kind === 'pairs' && <PairRows pairs={block.pairs} />}
+
+      {block.kind === 'dict' &&
+        (block.blocks || []).map((child, i) => (
+          <ContentBlock key={`${child.field}-${i}`} block={child} depth={depth + 1} />
+        ))}
+    </div>
+  );
+}
+
+// Amazon is a FORM — a fixed field list the seller does not choose — so it renders
+// as labelled fields rather than through the block renderer. That is the same split
+// the backend makes with two schemas and two prompts, and the reason the container
+// carries one nullable side per platform.
+function AmazonContent({ amazon }) {
+  const attrs = amazon.contextual_attributes || {};
+  const contextual = Object.entries(attrs).filter(([, v]) => Array.isArray(v) && v.length);
+  return (
+    <div className="divide-y divide-navy-100 dark:divide-slate-800">
+      <CopyField label="Title" value={amazon.title} />
+      <CopyField label="Item highlights" value={amazon.item_highlights} />
+
+      {!!amazon.bullet_points?.length && (
+        <div className="py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-navy-500 dark:text-slate-400">
+              Feature bullets
+            </div>
+            <CopyButton text={amazon.bullet_points.join('\n')} label="Copy all" />
+          </div>
+          <ol className="mt-1.5 list-decimal pl-5 space-y-1.5 text-[13px] text-navy-900 dark:text-slate-100 leading-relaxed">
+            {amazon.bullet_points.map((b, i) => (
+              <li key={i} className="break-words">{b}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      <CopyField label="Product description" value={amazon.product_description} />
+
+      {!!amazon.a_plus_modules?.length && (
+        <div className="py-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-navy-500 dark:text-slate-400">
+            A+ content modules
+          </div>
+          <div className="mt-2 space-y-3">
+            {amazon.a_plus_modules.map((m, i) => (
+              <div
+                key={i}
+                className="rounded-xl border border-navy-100 dark:border-slate-700 bg-mist dark:bg-slate-800/50 p-3"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    {m.module_type && (
+                      <div className="text-[10.5px] uppercase tracking-wide text-navy-500 dark:text-slate-400">
+                        {m.module_type}
+                      </div>
+                    )}
+                    <div className="mt-0.5 font-display text-[13px] font-semibold text-navy-900 dark:text-slate-100">
+                      {m.heading}
+                    </div>
+                  </div>
+                  <CopyButton text={`${m.heading}\n\n${m.body}`} />
+                </div>
+                <div className="mt-1.5 text-[12.5px] text-navy-800 dark:text-slate-200 leading-relaxed whitespace-pre-wrap break-words">
+                  {m.body}
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* A real caveat, not decoration: A+ tier eligibility could not be
+              established from any primary source, so the backend states what it
+              assumed rather than guessing — and a founder has to see that. */}
+          {!isBlank(amazon.a_plus_tier_note) && (
+            <p className="mt-2 text-[11.5px] italic text-navy-600 dark:text-slate-400 leading-relaxed">
+              {amazon.a_plus_tier_note}
+            </p>
+          )}
+        </div>
+      )}
+
+      <CopyField label="Backend search terms" value={amazon.backend_search_terms} mono />
+
+      {!!contextual.length && (
+        <div className="py-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-navy-500 dark:text-slate-400">
+            Contextual attributes
+          </div>
+          <p className="mt-1 text-[11.5px] text-navy-600 dark:text-slate-500 leading-relaxed">
+            What the product is FOR. These decide whether the marketplace's assistant surfaces you
+            for a shopper describing a need rather than naming a product.
+          </p>
+          <PairRows
+            pairs={contextual.map(([name, values]) => ({
+              name: humanize(name),
+              value: values.join(', '),
+            }))}
+          />
+        </div>
+      )}
+
+      {!!amazon.other_attributes?.length && (
+        <div className="py-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-navy-500 dark:text-slate-400">
+            Other attributes
+          </div>
+          <PairRows pairs={amazon.other_attributes} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One picture: its newest take, with its own version history underneath.
+function ImageSlotCard({ slot, ratio }) {
+  const current = currentVersion(slot);
+  const src = versionSrc(current);
+  const takes = slot.versions?.length || 0;
+  return (
+    <div className="rounded-xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden">
+      <div className="aspect-square bg-navy-50 dark:bg-slate-800 grid place-items-center overflow-hidden">
+        {src ? (
+          <img
+            src={src}
+            /* The alt text is REAL here — it is the line the founder publishes —
+               so it is the img's actual alt rather than an empty string. */
+            alt={current?.alt_text || slot.label || ''}
+            loading="lazy"
+            className="h-full w-full object-contain"
+          />
+        ) : (
+          <span className="text-[11px] text-navy-400 dark:text-slate-500">No picture yet</span>
+        )}
+      </div>
+      <div className="p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[12.5px] font-medium text-navy-900 dark:text-slate-100 truncate">
+            {slot.label || humanize(slot.slot_key)}
+          </div>
+          <span className="shrink-0 text-[10.5px] px-1.5 py-0.5 rounded bg-navy-50 dark:bg-slate-800 text-navy-600 dark:text-slate-400">
+            {ratio}
+          </span>
+        </div>
+        <div className="mt-1 flex items-center gap-2 text-[11px] text-navy-600 dark:text-slate-400">
+          <span>
+            {current?.source === 'existing' ? 'Your photograph' : 'Made for you'}
+          </span>
+          {takes > 1 && <span>· {takes} versions</span>}
+        </div>
+        {!isBlank(current?.alt_text) && (
+          <div className="mt-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="text-[10.5px] uppercase tracking-wide text-navy-500 dark:text-slate-400">
+                Alt text
+              </div>
+              <CopyButton text={current.alt_text} />
+            </div>
+            <p className="mt-0.5 text-[11.5px] text-navy-700 dark:text-slate-300 leading-snug break-words">
+              {current.alt_text}
+            </p>
+          </div>
+        )}
+        {/* Every earlier take, kept. Versions are append-only on the backend
+            precisely so the lineage stays readable, and hiding it here would throw
+            that away — a founder who preferred v1 needs to be able to find it. */}
+        {takes > 1 && (
+          <details className="mt-2">
+            <summary className="cursor-pointer text-[11px] text-meta-700 dark:text-meta-500 select-none">
+              Earlier versions
+            </summary>
+            <div className="mt-2 flex gap-2 flex-wrap">
+              {[...slot.versions]
+                .sort((a, b) => a.version - b.version)
+                .slice(0, -1)
+                .map((v) => {
+                  const thumb = versionSrc(v);
+                  return thumb ? (
+                    <img
+                      key={v.version}
+                      src={thumb}
+                      alt={v.alt_text || `Version ${v.version}`}
+                      title={v.direction || `Version ${v.version}`}
+                      loading="lazy"
+                      className="h-14 w-14 object-cover rounded-md border border-navy-100 dark:border-slate-700"
+                    />
+                  ) : null;
+                })}
+            </div>
+          </details>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StudioView({ content, imageSets, researching }) {
+  const page = content?.amazon || content?.generic || null;
+  // Grouped by category, because one category legitimately spans several sets —
+  // a gallery whose photographs are not all the same shape is one gallery across
+  // one set per shape, and showing those as two unexplained groups would read as a
+  // bug rather than as a fact about the founder's own photographs.
+  const groups = setsByCategory(imageSets);
+  const pictureCount = (imageSets?.sets || []).reduce(
+    (n, s) => n + (s.slots?.length || 0),
+    0,
+  );
+
+  if (!page && !pictureCount) {
+    return (
+      <CanvasEmpty
+        busy={researching}
+        busyTitle="Building your page…"
+        busyBody="It writes the words first, then makes the pictures. Images take a few minutes."
+        idleTitle="Nothing built yet"
+        idleBody="Ask in the chat for your page to be written, or for the photos it still needs. The Studio produces what you publish — the audit says what is wrong, the strategy says what to change, this makes it."
+      />
+    );
+  }
+
+  return (
+    <div className="p-6 max-w-[1024px] mx-auto flex flex-col gap-4">
+      {page && (
+        <div className="rounded-2xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-card p-5">
+          <div className="font-display text-[17px] font-semibold text-navy-900 dark:text-slate-100">
+            Your page, written
+          </div>
+          <p className="mt-1 text-[12.5px] text-navy-600 dark:text-slate-400 leading-relaxed">
+            {content?.amazon
+              ? 'Amazon fixes which fields exist, so this fills them. Copy each one straight into Seller Central.'
+              : 'Your storefront lets you choose the sections, so this proposes them in order — the first block is the top of the page.'}
+          </p>
+          <div className="mt-3">
+            {content?.amazon ? (
+              <AmazonContent amazon={content.amazon} />
+            ) : (
+              (content?.generic?.blocks || []).map((block, i) => (
+                <ContentBlock key={`${block.field}-${i}`} block={block} />
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {!!pictureCount && (
+        <div className="rounded-2xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-card p-5">
+          <div className="font-display text-[17px] font-semibold text-navy-900 dark:text-slate-100">
+            Your pictures
+          </div>
+          <p className="mt-1 text-[12.5px] text-navy-600 dark:text-slate-400 leading-relaxed">
+            {pictureCount} picture{pictureCount === 1 ? '' : 's'}. Your own photographs are kept
+            and shown alongside anything made for you — nothing is ever replaced, so every earlier
+            version stays available.
+          </p>
+          {groups.map((group) => (
+            <div key={group.category} className="mt-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-navy-500 dark:text-slate-400">
+                {group.category}
+              </div>
+              {group.sets.map((set) => (
+                <div
+                  key={set.set_key}
+                  className="mt-2 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"
+                >
+                  {(set.slots || []).map((slot) => (
+                    <ImageSlotCard
+                      key={`${set.set_key}-${slot.slot_key}`}
+                      slot={slot}
+                      ratio={set.aspect_ratio}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The audit — HTML ONLY, exactly like ScoutView and StrategyView.
+//
+// There is no per-area fallback any more and there cannot be one: the areas' own
+// output never leaves the backend. It feeds the render and each area's own next
+// pass, and `done.audit` carries the composed page and nothing else. A failed
+// render therefore leaves the PREVIOUS page standing rather than blanking this
+// screen, and the next turn that moves an area repairs it.
+//
+// `areas` is the set of areas that have announced themselves — content-free
+// progress webhooks — used only to say how far along a run is while the page is
+// still being composed.
+function AuditView({ audit, areas, researching }) {
   const html = audit?.html;
 
-  if (!landed.length && !html) {
+  if (!html) {
+    const seen = areas?.size || 0;
     return (
       <CanvasEmpty
         busy={researching}
         busyTitle="Auditing your page…"
-        busyBody="Each area lands on its own — they finish at very different times, and the report is rebuilt each time one does."
+        busyBody={
+          seen
+            ? `${seen} of ${AUDIT_AREAS.length} areas are in. They finish at very different times, and the report is composed once they land.`
+            : 'Each area lands on its own — they finish at very different times, and the report is composed once they land.'
+        }
         idleTitle="Nothing audited yet"
         idleBody="Ask for the audit in the chat. You can ask for the whole thing, or for one area on its own."
       />
     );
   }
 
-  // The composed document is the intended view. It is rebuilt whenever any area
-  // moves, so it is never stale relative to the areas — except on the one turn a
-  // render fails, which is exactly when the fallback below matters.
-  if (html) return <HtmlDoc html={html} title="Page audit" />;
-
-  return (
-    <div className="p-6 max-w-[1024px] mx-auto flex flex-col gap-4">
-      <div>
-        <div className="font-display text-[22px] font-semibold text-navy-900 dark:text-slate-100 leading-tight">
-          Your page audit
-        </div>
-        <p className="mt-1 text-[12.5px] text-navy-600 dark:text-slate-400 leading-relaxed">
-          {landed.length === AUDIT_AREAS.length
-            ? 'All four areas, judged against your page. Nothing here is a score, and nothing here tells you what to do — it says what your page is.'
-            : `${landed.length} of ${AUDIT_AREAS.length} areas so far. Each one lands on its own and appears here the moment it does.`}
-        </p>
-      </div>
-      {landed.map((key) => (
-        <AreaSection key={key} areaKey={key} value={audit[key]} />
-      ))}
-    </div>
-  );
+  return <HtmlDoc html={html} title="Page audit" />;
 }
 
 // One area inside the fallback report. Two kinds arrive now: SEO, AEO and Layout
@@ -1557,52 +2130,95 @@ function AuditView({ audit, researching }) {
 // because the value's own type is what the backend actually guarantees; a parallel
 // roster of which-areas-are-markdown would be a second place for that to drift.
 //
-// There is no aligned count here any more — the markdown areas have no rows.
-function AreaSection({ areaKey, value }) {
-  const question = AREA_BY_KEY[areaKey]?.question;
-  const isMarkdown = typeof value === 'string';
-  const { verdict, description, images, missing_shots, ...rest } = (isMarkdown ? {} : value) || {};
-  // Anything the structured area does not carry still renders, so a field added
-  // to it is legible before this file catches up.
-  const extra = Object.fromEntries(Object.entries(rest).filter(([, v]) => !isBlank(v)));
-
-  return (
-    <div className="rounded-2xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-card">
-      <div className="flex items-start gap-4 px-5 py-4 border-b border-navy-100 dark:border-slate-800">
-        <div className="min-w-0 flex-1">
-          <div className="font-display text-[19px] font-semibold text-navy-900 dark:text-slate-100 leading-tight">
-            {areaLabel(areaKey)}
-          </div>
-          {question && (
-            <div className="mt-0.5 text-[12px] text-navy-600 dark:text-slate-400">{question}?</div>
-          )}
-        </div>
-      </div>
-
-      <div className="px-5 py-4 flex flex-col gap-3">
-        {isMarkdown ? (
-          <Markdown text={value} />
-        ) : (
-          <>
-            {verdict && (
-              <div className="text-[15px] font-medium text-navy-900 dark:text-slate-100 leading-snug">
-                {verdict}
-              </div>
-            )}
-            {description && (
-              <p className="text-[13px] text-navy-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
-                {description}
-              </p>
-            )}
-            {Array.isArray(images) && images.length > 0 && <ImageJudgements images={images} />}
-            {Array.isArray(missing_shots) && <MissingShots shots={missing_shots} />}
-            {Object.keys(extra).length > 0 && <FieldRows value={extra} />}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
+// ---------------------------------------------------------------------------
+// RETIRED 2026-07-30 — the per-area audit renderers.
+//
+// `AreaSection` / `ImageJudgements` / `MissingShots` / `FieldRows` / `AuditValue`
+// rendered the audit's four areas when the composed HTML page was missing. They
+// are unreachable now: the areas' own output — three markdown documents and the
+// Images judgement — never leaves the backend. It feeds the audit's HTML render
+// and each area's own next pass, and `done.audit` carries `{ html }` alone.
+//
+// So there is no fallback to fall back TO, and that is deliberate rather than a
+// gap: a failed render leaves the PREVIOUS page standing, one turn stale, and the
+// next turn that moves an area repairs it. AuditView is HTML-only, exactly like
+// ScoutView and StrategyView.
+//
+// Commented out rather than deleted, per the standing rule for this workspace.
+//
+// TO RESTORE these, the backend has to send the areas again FIRST — three edits,
+// none of which this file can make: `done.audit` back to `audit.model_dump(...)`
+// in `api/v1/endpoints/pdp_agent.py`, `fire_audit_area`'s `data` back to
+// `{area: value}`, and the `mergeAudit` / `areaKeys` / `AUDIT_META_KEYS` trio
+// above uncommented so the per-area payloads have somewhere to land.
+// ---------------------------------------------------------------------------
+// // There is no aligned count here any more — the markdown areas have no rows.
+// function AreaSection({ areaKey, value }) {
+//   const question = AREA_BY_KEY[areaKey]?.question;
+//   const isMarkdown = typeof value === 'string';
+//   const { verdict, description, image_groups, missing_shots, ...rest } =
+//     (isMarkdown ? {} : value) || {};
+//   // Anything the structured area does not carry still renders, so a field added
+//   // to it is legible before this file catches up.
+//   const extra = Object.fromEntries(Object.entries(rest).filter(([, v]) => !isBlank(v)));
+//
+//   return (
+//     <div className="rounded-2xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-card">
+//       <div className="flex items-start gap-4 px-5 py-4 border-b border-navy-100 dark:border-slate-800">
+//         <div className="min-w-0 flex-1">
+//           <div className="font-display text-[19px] font-semibold text-navy-900 dark:text-slate-100 leading-tight">
+//             {areaLabel(areaKey)}
+//           </div>
+//           {question && (
+//             <div className="mt-0.5 text-[12px] text-navy-600 dark:text-slate-400">{question}?</div>
+//           )}
+//         </div>
+//       </div>
+//
+//       <div className="px-5 py-4 flex flex-col gap-3">
+//         {isMarkdown ? (
+//           <Markdown text={value} />
+//         ) : (
+//           <>
+//             {verdict && (
+//               <div className="text-[15px] font-medium text-navy-900 dark:text-slate-100 leading-snug">
+//                 {verdict}
+//               </div>
+//             )}
+//             {description && (
+//               <p className="text-[13px] text-navy-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
+//                 {description}
+//               </p>
+//             )}
+//             {/* The backend groups this product's photographs by what KIND each one is
+//                 (gallery, benefits, comparison…), and the Studio seeds its image sets
+//                 straight from those groups. A founder reads a gallery and a set of
+//                 benefit graphics as two different things, so the heading stays even
+//                 when there is only one group — its absence would read as "ungrouped"
+//                 rather than "one kind". `category` is free text, so it is rendered as
+//                 given and never mapped through a lookup. */}
+//             {Array.isArray(image_groups) &&
+//               image_groups.map((group, gi) =>
+//                 Array.isArray(group?.images) && group.images.length > 0 ? (
+//                   <div key={`${group?.category || 'group'}-${gi}`} className="flex flex-col gap-2">
+//                     <div className="text-[11px] font-semibold uppercase tracking-wide text-navy-500 dark:text-slate-400">
+//                       {group?.category || 'Uncategorised'}
+//                       <span className="ml-1.5 font-normal normal-case tracking-normal text-navy-500 dark:text-slate-400">
+//                         {group.images.length} image{group.images.length === 1 ? '' : 's'}
+//                       </span>
+//                     </div>
+//                     <ImageJudgements images={group.images} />
+//                   </div>
+//                 ) : null,
+//               )}
+//             {Array.isArray(missing_shots) && <MissingShots shots={missing_shots} />}
+//             {Object.keys(extra).length > 0 && <FieldRows value={extra} />}
+//           </>
+//         )}
+//       </div>
+//     </div>
+//   );
+// }
 
 // The three markdown areas, and the strategy's fallback, render through here.
 // `remark-gfm` is required rather than decorative: every one of these documents
@@ -1620,187 +2236,201 @@ function Markdown({ text }) {
 }
 
 
-// `ImageJudgement` carries no boolean — a photograph is rarely simply good or bad,
-// so the verdict is a sentence. Showing the photo beside its read is what makes
-// this area legible at all.
-function ImageJudgements({ images }) {
-  return (
-    <div className="flex flex-col gap-3 border-t border-navy-100 dark:border-slate-800 pt-3">
-      {images.map((img, i) => (
-        <div key={`${img?.url}-${i}`} className="flex gap-3">
-          <a
-            href={img?.url}
-            target="_blank"
-            rel="noreferrer"
-            title={img?.url}
-            className="shrink-0 h-20 w-20 rounded-lg border border-navy-100 dark:border-slate-700 bg-navy-50 dark:bg-slate-800 overflow-hidden"
-          >
-            <img
-              src={img?.url}
-              alt=""
-              loading="lazy"
-              className="h-full w-full object-cover"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-              }}
-            />
-          </a>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-start gap-2">
-              {typeof img?.is_aligned === 'boolean' && (
-                <span
-                  className={[
-                    'shrink-0 mt-0.5 rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
-                    img.is_aligned ? TONE_CLASS.good : TONE_CLASS.bad,
-                  ].join(' ')}
-                >
-                  {img.is_aligned ? 'Earns its place' : 'Does not'}
-                </span>
-              )}
-              {img?.verdict && (
-                <div className="text-[13px] font-medium text-navy-900 dark:text-slate-100 leading-snug">
-                  {img.verdict}
-                </div>
-              )}
-            </div>
-            {img?.justification && (
-              <div className="mt-1 text-[12.5px] text-navy-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
-                {img.justification}
-              </div>
-            )}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
+// // `ImageJudgement` carries no boolean — a photograph is rarely simply good or bad,
+// // so the verdict is a sentence. Showing the photo beside its read is what makes
+// // this area legible at all.
+// function ImageJudgements({ images }) {
+//   return (
+//     <div className="flex flex-col gap-3 border-t border-navy-100 dark:border-slate-800 pt-3">
+//       {images.map((img, i) => (
+//         <div key={`${img?.url}-${i}`} className="flex gap-3">
+//           <a
+//             href={img?.url}
+//             target="_blank"
+//             rel="noreferrer"
+//             title={img?.url}
+//             className="shrink-0 h-20 w-20 rounded-lg border border-navy-100 dark:border-slate-700 bg-navy-50 dark:bg-slate-800 overflow-hidden"
+//           >
+//             <img
+//               src={img?.url}
+//               alt={img?.alt_text || ''}
+//               loading="lazy"
+//               className="h-full w-full object-cover"
+//               onError={(e) => {
+//                 e.currentTarget.style.display = 'none';
+//               }}
+//             />
+//           </a>
+//           <div className="min-w-0 flex-1">
+//             <div className="flex items-start gap-2">
+//               {typeof img?.is_aligned === 'boolean' && (
+//                 <span
+//                   className={[
+//                     'shrink-0 mt-0.5 rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+//                     img.is_aligned ? TONE_CLASS.good : TONE_CLASS.bad,
+//                   ].join(' ')}
+//                 >
+//                   {img.is_aligned ? 'Earns its place' : 'Does not'}
+//                 </span>
+//               )}
+//               {img?.verdict && (
+//                 <div className="text-[13px] font-medium text-navy-900 dark:text-slate-100 leading-snug">
+//                   {img.verdict}
+//                 </div>
+//               )}
+//             </div>
+//             {img?.justification && (
+//               <div className="mt-1 text-[12.5px] text-navy-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
+//                 {img.justification}
+//               </div>
+//             )}
+//             {/* Alt text is the one thing in this row a founder COPIES rather than
+//                 reads — it is publishable output, not a finding — so it is set apart
+//                 and labelled instead of running on as another paragraph. It is also
+//                 the `alt` on the thumbnail above, which is why that is no longer "". */}
+//             {img?.alt_text && (
+//               <div className="mt-1.5 flex gap-1.5 text-[12px] leading-relaxed">
+//                 <span className="shrink-0 font-semibold uppercase tracking-wide text-[10px] mt-0.5 text-navy-500 dark:text-slate-400">
+//                   Alt
+//                 </span>
+//                 <span className="min-w-0 text-navy-700 dark:text-slate-300">
+//                   {img.alt_text}
+//                 </span>
+//               </div>
+//             )}
+//           </div>
+//         </div>
+//       ))}
+//     </div>
+//   );
+// }
 
-// What the image set never shows. Worded as absence, not instruction — the Auditor
-// diagnoses and the Strategist prescribes (ADR-0009). An EMPTY list is kept and
-// shown, because "nothing is missing" is a real and good answer; on the raw input
-// path with no photographs at all, this is the area's whole output.
-function MissingShots({ shots }) {
-  return (
-    <div className="border-t border-navy-100 dark:border-slate-800 pt-3">
-      <div className="text-[11px] uppercase tracking-wide text-navy-600 dark:text-slate-400">
-        Never shown
-      </div>
-      {shots.length ? (
-        <ul className="mt-1.5 flex flex-col gap-1">
-          {shots.map((shot, i) => (
-            <li key={i} className="flex gap-2 text-[12.5px] text-navy-900 dark:text-slate-100">
-              <span className="text-navy-400 dark:text-slate-600 shrink-0">•</span>
-              <span className="min-w-0 leading-relaxed">{shot}</span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <div className="mt-1.5 text-[12.5px] italic text-navy-400 dark:text-slate-500">
-          Nothing a buyer needs to see is missing.
-        </div>
-      )}
-    </div>
-  );
-}
+// // What the image set never shows. Worded as absence, not instruction — the Auditor
+// // diagnoses and the Strategist prescribes (ADR-0009). An EMPTY list is kept and
+// // shown, because "nothing is missing" is a real and good answer; on the raw input
+// // path with no photographs at all, this is the area's whole output.
+// function MissingShots({ shots }) {
+//   return (
+//     <div className="border-t border-navy-100 dark:border-slate-800 pt-3">
+//       <div className="text-[11px] uppercase tracking-wide text-navy-600 dark:text-slate-400">
+//         Never shown
+//       </div>
+//       {shots.length ? (
+//         <ul className="mt-1.5 flex flex-col gap-1">
+//           {shots.map((shot, i) => (
+//             <li key={i} className="flex gap-2 text-[12.5px] text-navy-900 dark:text-slate-100">
+//               <span className="text-navy-400 dark:text-slate-600 shrink-0">•</span>
+//               <span className="min-w-0 leading-relaxed">{shot}</span>
+//             </li>
+//           ))}
+//         </ul>
+//       ) : (
+//         <div className="mt-1.5 text-[12.5px] italic text-navy-400 dark:text-slate-500">
+//           Nothing a buyer needs to see is missing.
+//         </div>
+//       )}
+//     </div>
+//   );
+// }
 
-// One object → labelled rows. Null and empty-string fields are dropped (they mean
-// "not applicable here" and are noise); an EMPTY LIST is kept and shown as "None",
-// because across these schemas an empty list is a real and often good answer.
-function FieldRows({ value }) {
-  const entries = Object.entries(value || {}).filter(([, v]) => !isBlank(v));
-  if (!entries.length) {
-    return <div className="py-3 text-[12.5px] italic text-navy-400 dark:text-slate-500">Nothing recorded.</div>;
-  }
-  return (
-    <dl className="divide-y divide-navy-100 dark:divide-slate-800">
-      {entries.map(([key, v]) => (
-        <div key={key} className="py-3 flex flex-col md:flex-row gap-1.5 md:gap-5">
-          <dt className="md:w-[190px] shrink-0 text-[11px] uppercase tracking-wide text-navy-600 dark:text-slate-400 md:pt-0.5">
-            {humanize(key)}
-          </dt>
-          <dd className="min-w-0 flex-1 text-[13px] text-navy-900 dark:text-slate-100 leading-relaxed">
-            <AuditValue fieldKey={key} value={v} />
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
+// // One object → labelled rows. Null and empty-string fields are dropped (they mean
+// // "not applicable here" and are noise); an EMPTY LIST is kept and shown as "None",
+// // because across these schemas an empty list is a real and often good answer.
+// function FieldRows({ value }) {
+//   const entries = Object.entries(value || {}).filter(([, v]) => !isBlank(v));
+//   if (!entries.length) {
+//     return <div className="py-3 text-[12.5px] italic text-navy-400 dark:text-slate-500">Nothing recorded.</div>;
+//   }
+//   return (
+//     <dl className="divide-y divide-navy-100 dark:divide-slate-800">
+//       {entries.map(([key, v]) => (
+//         <div key={key} className="py-3 flex flex-col md:flex-row gap-1.5 md:gap-5">
+//           <dt className="md:w-[190px] shrink-0 text-[11px] uppercase tracking-wide text-navy-600 dark:text-slate-400 md:pt-0.5">
+//             {humanize(key)}
+//           </dt>
+//           <dd className="min-w-0 flex-1 text-[13px] text-navy-900 dark:text-slate-100 leading-relaxed">
+//             <AuditValue fieldKey={key} value={v} />
+//           </dd>
+//         </div>
+//       ))}
+//     </dl>
+//   );
+// }
 
-function AuditValue({ fieldKey, value }) {
-  if (typeof value === 'boolean') {
-    return <Chip tone={value ? 'good' : 'bad'}>{value ? 'Yes' : 'No'}</Chip>;
-  }
-  if (typeof value === 'number') {
-    return <span className="font-mono">{value}</span>;
-  }
-  if (typeof value === 'string') {
-    // Only the image area carries image URLs, and seeing the photo beside its read
-    // is what makes that area legible at all.
-    if ((fieldKey === 'url' || fieldKey === 'existing_url') && isHttpUrl(value)) {
-      return <ImageRef url={value} />;
-    }
-    if (isHttpUrl(value)) {
-      return (
-        <a
-          href={value}
-          target="_blank"
-          rel="noreferrer"
-          className="text-meta-600 dark:text-meta-500 hover:underline break-all"
-        >
-          {value}
-        </a>
-      );
-    }
-    if (isVerdict(value)) {
-      return <Chip tone="neutral">{value.replace(/_/g, ' ')}</Chip>;
-    }
-    return <span className="whitespace-pre-wrap">{value}</span>;
-  }
-  if (Array.isArray(value)) {
-    if (!value.length) {
-      return <span className="text-[12.5px] italic text-navy-400 dark:text-slate-500">None</span>;
-    }
-    const allScalar = value.every((v) => v === null || typeof v !== 'object');
-    if (allScalar) {
-      return (
-        <ul className="flex flex-col gap-1">
-          {value.map((v, i) => (
-            <li key={i} className="flex gap-2">
-              <span className="text-navy-400 dark:text-slate-600 shrink-0">•</span>
-              <span className="min-w-0">
-                <AuditValue fieldKey={fieldKey} value={v} />
-              </span>
-            </li>
-          ))}
-        </ul>
-      );
-    }
-    return (
-      <div className="flex flex-col gap-2.5">
-        {value.map((item, i) => (
-          <div
-            key={i}
-            className="rounded-xl border border-navy-100 dark:border-slate-700 bg-mist dark:bg-slate-800/50 px-4 py-1"
-          >
-            <div className="pt-2.5 text-[10px] font-mono text-navy-400 dark:text-slate-500">
-              {i + 1}
-            </div>
-            <FieldRows value={item} />
-          </div>
-        ))}
-      </div>
-    );
-  }
-  if (value && typeof value === 'object') {
-    return (
-      <div className="rounded-xl border border-navy-100 dark:border-slate-700 bg-mist dark:bg-slate-800/50 px-4 py-1">
-        <FieldRows value={value} />
-      </div>
-    );
-  }
-  return null;
-}
+// function AuditValue({ fieldKey, value }) {
+//   if (typeof value === 'boolean') {
+//     return <Chip tone={value ? 'good' : 'bad'}>{value ? 'Yes' : 'No'}</Chip>;
+//   }
+//   if (typeof value === 'number') {
+//     return <span className="font-mono">{value}</span>;
+//   }
+//   if (typeof value === 'string') {
+//     // Only the image area carries image URLs, and seeing the photo beside its read
+//     // is what makes that area legible at all.
+//     if ((fieldKey === 'url' || fieldKey === 'existing_url') && isHttpUrl(value)) {
+//       return <ImageRef url={value} />;
+//     }
+//     if (isHttpUrl(value)) {
+//       return (
+//         <a
+//           href={value}
+//           target="_blank"
+//           rel="noreferrer"
+//           className="text-meta-600 dark:text-meta-500 hover:underline break-all"
+//         >
+//           {value}
+//         </a>
+//       );
+//     }
+//     if (isVerdict(value)) {
+//       return <Chip tone="neutral">{value.replace(/_/g, ' ')}</Chip>;
+//     }
+//     return <span className="whitespace-pre-wrap">{value}</span>;
+//   }
+//   if (Array.isArray(value)) {
+//     if (!value.length) {
+//       return <span className="text-[12.5px] italic text-navy-400 dark:text-slate-500">None</span>;
+//     }
+//     const allScalar = value.every((v) => v === null || typeof v !== 'object');
+//     if (allScalar) {
+//       return (
+//         <ul className="flex flex-col gap-1">
+//           {value.map((v, i) => (
+//             <li key={i} className="flex gap-2">
+//               <span className="text-navy-400 dark:text-slate-600 shrink-0">•</span>
+//               <span className="min-w-0">
+//                 <AuditValue fieldKey={fieldKey} value={v} />
+//               </span>
+//             </li>
+//           ))}
+//         </ul>
+//       );
+//     }
+//     return (
+//       <div className="flex flex-col gap-2.5">
+//         {value.map((item, i) => (
+//           <div
+//             key={i}
+//             className="rounded-xl border border-navy-100 dark:border-slate-700 bg-mist dark:bg-slate-800/50 px-4 py-1"
+//           >
+//             <div className="pt-2.5 text-[10px] font-mono text-navy-400 dark:text-slate-500">
+//               {i + 1}
+//             </div>
+//             <FieldRows value={item} />
+//           </div>
+//         ))}
+//       </div>
+//     );
+//   }
+//   if (value && typeof value === 'object') {
+//     return (
+//       <div className="rounded-xl border border-navy-100 dark:border-slate-700 bg-mist dark:bg-slate-800/50 px-4 py-1">
+//         <FieldRows value={value} />
+//       </div>
+//     );
+//   }
+//   return null;
+// }
 
 function ImageRef({ url }) {
   return (

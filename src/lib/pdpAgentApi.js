@@ -39,21 +39,26 @@
 //   - { type: 'strategist_working', name }
 //        The Strategist started. Also once per turn; it is a single call with no
 //        loop, so there is no second pass it could fire on.
-//   - { type: 'done', thread_id, audit, strategy, scout }
-//        Authoritative end-of-turn snapshot. EACH is null when that artifact did
-//        not move this turn — null means UNCHANGED, never "clear it".
+//   - { type: 'studio_working', name }
+//        The Studio started. Once per turn, not once per ReAct loop pass. It is
+//        the second-slowest step after the Scout — a batch of six images renders
+//        for minutes — so say so rather than showing a bare spinner.
+//   - { type: 'done', thread_id, audit, strategy, scout, content, image_sets }
+//        Authoritative end-of-turn snapshot. EACH is null when that specialist did
+//        not run this turn — null means UNCHANGED, never "clear it".
 //
-//        `audit`    the WHOLE current audit, every area audited so far, so a
-//                   receiver that missed an area webhook is backfilled here.
-//                   THREE areas are markdown strings (seo, aeo, layout); IMAGES
-//                   alone is structured, because its rows are keyed by image URL
-//                   and each photograph renders beside its own judgement. It also
-//                   carries `html` — all four areas composed into ONE rendered
-//                   document — which is NOT an area and must be excluded from any
-//                   loop over areas.
-//        `strategy` `{ markdown, html }`. One document, rewritten whole, so there
-//                   is nothing to merge. `html` can lag `markdown` by exactly one
-//                   failed render, which is why both ride the frame.
+//        `audit`    `{ html }` — every area audited so far, composed into ONE
+//                   rendered page. Replaced whole, so a receiver that missed a
+//                   progress webhook loses nothing.
+//
+//                   The four areas' OWN output never reaches this wire. Three of
+//                   them are markdown documents and Images is structured, but all
+//                   of it is backend-internal: it feeds this render and each
+//                   area's own next pass, and nothing else. So there is no
+//                   per-area value to merge and no area key to loop over.
+//        `strategy` `{ html }` — the page itself, written whole by ONE call. No
+//                   markdown source rides beside it, so the two can no longer
+//                   disagree about which document this is. Replaced whole.
 //
 //        `scout`    `{ analysis, html, queries, product_count }`. One document,
 //                   replaced whole like the strategy — a run maps the field as it
@@ -62,6 +67,38 @@
 //                   cannot arrive half-rendered and needs no fallback rendering
 //                   here. `analysis` rides along because the backend's own CMO and
 //                   Strategist read it as text; it is not a second view of the page.
+//
+//        `content`  the page's WORDS — the Studio's text artifact. A CONTAINER
+//                   with one nullable side per platform: `amazon` (a fixed form —
+//                   title, bullets, A+ modules, attributes) or `generic` (just
+//                   `blocks`, an ordered list where the order IS the page order).
+//                   Exactly one is ever populated, so read whichever is non-null
+//                   rather than branching on the platform. Replaced whole.
+//
+//                   A generic block is `{ field, label, kind, text, items, pairs,
+//                   blocks }` and `kind` names which ONE slot is filled: 'str' →
+//                   text, 'list' → items, 'pairs' → pairs, 'dict' → blocks. Only
+//                   'dict' nests, and it nests without limit — so rendering it
+//                   means one recursive component, not a fixed depth.
+//
+//        `image_sets` the page's PICTURES — `{ sets: [...] }`. A set is a group
+//                   sharing a `category` and an `aspect_ratio`; a slot is one
+//                   picture; a slot's `versions` are APPEND-ONLY takes of it, so
+//                   the LAST version is the current picture and nothing is ever
+//                   removed. Replaced whole.
+//
+//                   One category can span SEVERAL sets — a gallery whose
+//                   photographs are not all the same shape is one gallery across
+//                   one set per shape — so group sets by `category` for display or
+//                   a founder sees their gallery split in two.
+//
+//                   **Versions carry base64 in `data_uri`**, unlike everything
+//                   else on this wire. That is unavoidable rather than an
+//                   oversight: a GENERATED picture exists nowhere else and cannot
+//                   be fetched by URL. A version with a `url` is one of the
+//                   product's own existing photographs and carries both — prefer
+//                   the url there and keep the bytes as the fallback, since a
+//                   merchant CDN url can expire.
 //
 //        Neither the audit nor the strategy carries the rasterized PNG the backend
 //        keeps for its own models to look at — that is stripped server-side,
@@ -92,17 +129,34 @@
 //                                        included (completed)
 //   Audit — fired by /stream:
 //     'pdp.audit.tool_call'   { tool_name, args }  (before the area runs)
-//     'pdp.audit.<area>'      { <area>: {…} }      (ONE area landed; never batched
+//     'pdp.audit.<area>'      { area }             (ONE area landed; never batched
 //                                                   — the areas finish far apart)
-//   <area> is one of the four audit field names: seo, aeo, images, layout. Nothing
-//   here enumerates them — the stage suffix IS the key inside `data`, so a fifth
-//   area needs no change on this side.
+//   <area> is one of the four audit field names: seo, aeo, images, layout, and it
+//   names itself in `data.area`, so a fifth area needs no change on this side.
+//
+//   This is a PROGRESS EVENT and carries no audit content. The areas finish
+//   minutes apart, so an area landing is worth showing long before the page exists
+//   — but what it produced stays server-side, and the composed page arrives on the
+//   `done` frame. Use it for the activity feed and a "N of 4" line, nothing more.
 //   Scout — fired by /stream:
 //     'pdp.scout.report'      { scout: {…} }        (the field landed)
 //   ONE stage, not a per-step pipeline like the Meta Ad lens's: the Scout produces
 //   ONE artifact, so there is nothing to stagger. Its `data.scout` IS the `done`
 //   frame's `scout` value, so the same handler serves both — and because a Scout
 //   run replaces rather than merges, that handler is a plain assignment.
+//   Studio — fired by /stream:
+//     'pdp.studio.tool_call'  { tool_name, args }   (before the work runs)
+//     'pdp.studio.content'    { content: {…} }      (the page's words landed)
+//     'pdp.studio.image'      { image_sets: {…} }   (ONE picture, as it is made)
+//   TWO completion stages because the two artifacts land differently: the content
+//   arrives whole in one call, while the pictures arrive ONE AT A TIME over several
+//   minutes — which is the whole reason to subscribe rather than wait for `done`.
+//
+//   `pdp.studio.image`'s `data.image_sets` is a PARTIAL of the `done` frame's
+//   value: the path down to the ONE new version, carrying its set's key, category
+//   and aspect_ratio so a receiver that has never seen that set can create it from
+//   this webhook alone. So it needs a per-set/per-slot MERGE, unlike the content
+//   stage — which is a plain assignment, like the scout's.
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
