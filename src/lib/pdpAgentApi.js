@@ -234,6 +234,13 @@ export async function initPdpAgent({
  * is ignored) instead of the phase-1 checkpoint. No `foundation_thread_id`, and
  * NO progress webhooks — a multipart form carries nowhere clean to put a webhook
  * config, so a page scrape here shows no intake stages. Returns the same shape.
+ *
+ * `pdfFile` is OPTIONAL. Omit it and the thread opens with NO brand context —
+ * `brand_bible` and `buyer_personas` are seeded as empty strings, which every
+ * backend reader coalesces to "_Not available._" (a space would not: it is truthy
+ * and would render a blank section instead). This is the only entry that can do
+ * that; `/init` still requires its `foundation_thread_id`, as the Meta Ad init
+ * does. It is what the standalone entry uses when no project backs the screen.
  */
 export async function initPdpAgentWithPdf({
   thread_id,
@@ -254,7 +261,12 @@ export async function initPdpAgentWithPdf({
   if (product_url) form.append('product_url', product_url);
   if (product_text) form.append('product_text', product_text);
   for (const url of image_urls || []) form.append('image_urls', url);
-  form.append('pdf_file', pdfFile);
+  // The PDF is OPTIONAL, so it is appended only when there is one — for the same
+  // reason as the fields above: FormData stringifies null into the literal "null",
+  // which would reach the backend as a file part with a filename and blow up the
+  // PDF split on bytes that are not a PDF. Omitted entirely, the thread opens with
+  // no brand context and both deliverables empty.
+  if (pdfFile) form.append('pdf_file', pdfFile);
 
   const res = await fetch(`${API_BASE}/pdp-agent/init_with_pdf`, {
     method: 'POST',

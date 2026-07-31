@@ -247,9 +247,11 @@ export default function App() {
         </div>
         <div className={view === 'pdp_agent' ? 'h-screen' : 'hidden'}>
           {/* The PDP screen mints its own product thread — the session thread is
-              passed only as the Foundation thread the brand context loads from.
-              In the PDF flow there is NO phase-1 checkpoint behind that id, so it
-              is withheld and the screen asks for a Blueprint PDF instead. */}
+              passed only as the Foundation thread the brand context loads from,
+              and the screen sends it silently rather than asking for it (the Meta
+              Ad screen's arrangement). In the PDF flow there is NO phase-1
+              checkpoint behind that id, so it is withheld; the screen then takes
+              the multipart entry, where a Blueprint PDF is optional. */}
           <PdpAgentScreen
             foundationThreadId={pdfFlow ? undefined : initResult.thread_id}
             onBack={() => setView('agents')}
@@ -284,8 +286,9 @@ export default function App() {
   }
 
   // Standalone product audit — picked from the chooser, no email/foundation
-  // session. The screen's setup form asks for brand context: an uploaded Company
-  // Blueprint PDF, or the id of a project that already built one.
+  // session. No `foundationThreadId` is passed, so the screen takes the multipart
+  // entry: brand context comes from a Blueprint PDF if the founder uploads one, and
+  // the audit runs without any if they don't.
   if (stage === 'pdp') {
     return (
       <PdpAgentScreen

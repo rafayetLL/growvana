@@ -89,6 +89,23 @@ const SPECIALISTS = [
 ];
 const LIVE_SPECIALISTS = new Set(['auditor', 'scout', 'strategist', 'studio']);
 
+// Which specialist a progress webhook belongs to, from its stage prefix. It is a
+// PREFIX match on purpose: `pdp.audit.<area>` names a different area every time and
+// `pdp.studio.image` fires once per picture, so matching whole stage names would
+// need a roster this file has deliberately never held.
+//
+// The Strategist is absent because it fires no webhooks — one call, no tools, so
+// there is nothing to report between starting and finishing. Its empty page shows
+// the line its SSE frame set, and nothing refines it.
+const STAGE_OWNER = [
+  ['pdp.audit.', 'auditor'],
+  ['pdp.scout.', 'scout'],
+  ['pdp.studio.', 'studio'],
+];
+
+const specialistForStage = (stage) =>
+  STAGE_OWNER.find(([prefix]) => String(stage || '').startsWith(prefix))?.[1] || null;
+
 // RETIRED 2026-07-30 — `AUDIT_META_KEYS`. It separated `html` from the area keys
 // inside the audit payload, back when that payload held both. `done.audit` is now
 // `{ html }` and nothing else, so there is no area key to tell it apart from.
@@ -101,7 +118,7 @@ const LIVE_SPECIALISTS = new Set(['auditor', 'scout', 'strategist', 'studio']);
 // to make a choice that changes nothing downstream.
 const PLATFORMS = [
   { key: 'amazon', label: 'Amazon' },
-  { key: 'other', label: 'Somewhere else' },
+  { key: 'other', label: 'Other' },
 ];
 
 const PLATFORM_LABELS = Object.fromEntries(PLATFORMS.map((p) => [p.key, p.label]));
@@ -296,10 +313,16 @@ export default function PdpAgentScreen({
   const [productUrl, setProductUrl] = useState('');
   const [productText, setProductText] = useState('');
   const [imageUrls, setImageUrls] = useState(['']);
-  // Brand context, one of two ways. Pre-filled from the open project when there is
-  // one; blank in the standalone entry, where the founder pastes a Foundation
-  // thread of their own or uploads a Blueprint PDF instead.
-  const [foundationId, setFoundationId] = useState(foundationThreadId || '');
+  // Brand context, and the founder is never asked to go FIND it — this mirrors the
+  // Meta Ad screen exactly, which sends its session thread silently and offers only
+  // a PDF. The typed project-ID field is RETIRED: a founder in a project session
+  // already has the id (it arrives on the prop), and one in the standalone entry has
+  // no way to know it.
+  //
+  // RETIRED — the typed Foundation-thread field. Kept for restore; uncomment this,
+  // the `Field` in `SetupView`'s brand-context card, and the `hasProjectFoundation`
+  // prop together, then send `foundationId.trim()` in place of `foundationThreadId`.
+  // const [foundationId, setFoundationId] = useState(foundationThreadId || '');
   const [pdfFile, setPdfFile] = useState(null);
   const [initLoading, setInitLoading] = useState(false);
   const [initError, setInitError] = useState(null);
@@ -328,7 +351,23 @@ export default function PdpAgentScreen({
   const [streamingText, setStreamingText] = useState(null);
   const [typing, setTyping] = useState(false);
   const [turnError, setTurnError] = useState(null);
-  const [researching, setResearching] = useState(false);
+  // WHICH specialists are working right now, and what each is doing — keyed by the
+  // canvas tab key, value = the live status line for that one.
+  //
+  // Per-specialist rather than one boolean, because an empty tab must only claim to
+  // be busy when ITS OWN specialist is running. With a single flag, a turn that ran
+  // only the Auditor put "Mapping the competitor field…" on the empty Scout tab and
+  // "Writing your strategy…" on the empty Strategist tab — three spinners for one
+  // running node, two of them describing work nobody had asked for.
+  //
+  // A MAP rather than one key, because the Auditor and the Scout run CONCURRENTLY:
+  // both are legitimately live at once, and both tabs should say so.
+  const [running, setRunning] = useState({});
+  const researching = Object.keys(running).length > 0;
+  function startRunning(key, note) {
+    setRunning((prev) => ({ ...prev, [key]: note }));
+    pushActivity(note);
+  }
   const [activity, setActivity] = useState([]);
   const pushActivity = (text) => {
     if (text) setActivity((prev) => (prev[prev.length - 1] === text ? prev : [...prev, text].slice(-40)));
@@ -394,11 +433,10 @@ export default function PdpAgentScreen({
   const cleanedImageUrls = imageUrls.map((s) => s.trim()).filter(Boolean);
 
   function validateSetup() {
-    // Brand context is required — the audit speaks in the brand's voice and
-    // positioning, and there is no useful audit without it.
-    if (!pdfFile && !foundationId.trim()) {
-      return 'The audit needs your brand: connect the project that built your Company Blueprint, or upload your Blueprint PDF.';
-    }
+    // Brand context is no longer gated here. A project session supplies it from the
+    // prop without asking, and the standalone entry may go without entirely — the
+    // PDF route accepts no file and seeds both deliverables empty, which every
+    // backend reader coalesces to "_Not available._".
     if (path === 'page_scrape') {
       if (!isHttpUrl(productUrl.trim())) {
         return 'Paste the link to the product page you want audited — it needs to start with http:// or https://.';
@@ -434,10 +472,16 @@ export default function PdpAgentScreen({
     setInitError(null);
     setIntake({});
 
+    // Which entry this turn uses, decided once and read everywhere below. `/init`
+    // needs a Foundation thread — it REQUIRES `foundation_thread_id`, exactly as the
+    // Meta Ad init does — so the multipart entry serves both the founder who chose a
+    // PDF and the standalone founder who has neither.
+    const useMultipart = Boolean(pdfFile) || !foundationThreadId;
+
     // Open the subscription BEFORE init so no stage is missed — the scrape runs
-    // inside the request and fires as it goes. The PDF entry is multipart and
-    // carries no webhook config, so it has no stages to watch.
-    const webhook_request = pdfFile
+    // inside the request and fires as it goes. The multipart entry carries no
+    // webhook config, so it has no stages to watch.
+    const webhook_request = useMultipart
       ? null
       : buildWebhookRequest({
           task_id: taskId,
@@ -478,10 +522,12 @@ export default function PdpAgentScreen({
 
     try {
       // A Blueprint PDF wins when both are supplied — the founder chose it over
-      // whatever the connected project holds.
-      const res = pdfFile
+      // whatever the connected project holds. With neither, the multipart entry
+      // still runs: `pdfFile` is null, the backend seeds both deliverables empty,
+      // and the audit judges the page on its own terms.
+      const res = useMultipart
         ? await initPdpAgentWithPdf({ ...common, pdfFile })
-        : await initPdpAgent({ ...common, foundation_thread_id: foundationId.trim(), webhook_request });
+        : await initPdpAgent({ ...common, foundation_thread_id: foundationThreadId, webhook_request });
       setCapture(res);
       setMessages(
         res.ai_message ? [{ role: 'assistant', content: res.ai_message, time: Date.now() }] : []
@@ -510,7 +556,7 @@ export default function PdpAgentScreen({
     setTurnError(null);
     setTyping(true);
     setStreamingText(null);
-    setResearching(false);
+    setRunning({});
     setActivity([]);
     canvasTouchedRef.current = false;
 
@@ -527,6 +573,19 @@ export default function PdpAgentScreen({
         // Every webhook carries a founder-facing `success_message` — it drives the
         // activity feed so each research call landing is visible as it happens.
         if (evt.success_message) pushActivity(evt.success_message);
+        // …and it refines the line on that specialist's OWN empty tab, so a founder
+        // watching the Auditor sees "SEO is ready" rather than the generic opener
+        // the SSE frame set minutes ago.
+        //
+        // Guarded on the specialist ALREADY running: the SSE frame is what starts
+        // one, and a webhook must never be able to light up a tab whose specialist
+        // never announced itself — a late `pdp.audit.*` arriving after the turn
+        // closed would otherwise leave the Auditor tab spinning with no turn behind
+        // it.
+        const owner = specialistForStage(stage);
+        if (owner && evt.success_message) {
+          setRunning((prev) => (prev[owner] ? { ...prev, [owner]: evt.success_message } : prev));
+        }
         // The Scout lands whole and has ONE stage, so it needs no reducer — its
         // `data.scout` IS the `done` frame's `scout` value, and a later run
         // replaces it rather than merging into it.
@@ -599,25 +658,21 @@ export default function PdpAgentScreen({
           setStreamingText(assistantText);
         } else if (ev.type === 'auditor_researching') {
           // Fires once per turn, not once per ReAct loop pass.
-          setResearching(true);
-          pushActivity('Auditing your product page…');
+          startRunning('auditor', 'Auditing your product page…');
         } else if (ev.type === 'scout_researching') {
           // Once per turn. The slowest step by far — it searches the category,
           // then reads each winning page — so the activity line says so rather
           // than leaving a founder wondering whether the turn stalled.
-          setResearching(true);
-          pushActivity('Mapping the competitor field — this one takes a few minutes…');
+          startRunning('scout', 'Mapping the competitor field — this one takes a few minutes…');
         } else if (ev.type === 'strategist_working') {
           // Also once per turn. The Strategist is a single call with no loop, so
           // there is no second pass this could fire on.
-          setResearching(true);
-          pushActivity('Writing your page strategy…');
+          startRunning('strategist', 'Writing your page strategy…');
         } else if (ev.type === 'studio_working') {
           // Once per turn, not once per ReAct loop pass. The second-slowest step
           // after the Scout — a batch of images renders for minutes — so the line
           // says so rather than letting it read as a stall.
-          setResearching(true);
-          pushActivity('Building your page — images take a few minutes…');
+          startRunning('studio', 'Building your page — images take a few minutes…');
         } else if (ev.type === 'done') {
           if (assistantText) {
             setMessages((prev) => [
@@ -685,7 +740,9 @@ export default function PdpAgentScreen({
       }
       setTyping(false);
       setStreamingText(null);
-      setResearching(false);
+      // Cleared in `finally`, so a turn that errors or is aborted mid-run cannot
+      // leave a tab spinning forever on work that has stopped.
+      setRunning({});
       abortRef.current = null;
       sub?.close();
     }
@@ -718,14 +775,24 @@ export default function PdpAgentScreen({
     runStream({ gap_answers: answers });
   }
 
-  function handleSendText(text, attachment_urls) {
-    const t = (text || '').trim();
-    if (!t) return;
+  // Canvas edit boxes show ONLY the founder's instruction in chat, but send the
+  // POSITIONED message — which field, which section, which set and slot — to the
+  // endpoint, so the Studio knows what to change without the founder having to
+  // type the addressing. Lifted verbatim from the Meta Ad screen's `sendTurn`,
+  // because the two canvases are solving the identical problem.
+  function sendTurn(displayText, endpointText, attachment_urls) {
+    const ep = ((endpointText ?? displayText) || '').trim();
+    if (!ep) return;
+    const shown = (displayText || ep).trim();
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: t, attachments: attachment_urls, time: Date.now() },
+      { role: 'user', content: shown, attachments: attachment_urls, time: Date.now() },
     ]);
-    runStream({ user_message: t, attachment_urls });
+    runStream({ user_message: ep, attachment_urls });
+  }
+
+  function handleSendText(text, attachment_urls) {
+    sendTurn(text, text, attachment_urls);
   }
 
   return (
@@ -769,11 +836,9 @@ export default function PdpAgentScreen({
             setProductText={setProductText}
             imageUrls={imageUrls}
             setImageUrls={setImageUrls}
-            foundationId={foundationId}
-            setFoundationId={setFoundationId}
-            hasProjectFoundation={!!foundationThreadId}
             pdfFile={pdfFile}
             setPdfFile={setPdfFile}
+            hasFoundation={!!foundationThreadId}
             initLoading={initLoading}
             initError={initError}
             intake={intake}
@@ -862,7 +927,9 @@ export default function PdpAgentScreen({
                 imageSets={imageSets}
                 canvasSel={canvasSel}
                 onPickCanvas={pickCanvas}
-                researching={researching}
+                running={running}
+                onUpdate={sendTurn}
+                busy={busy}
               />
             </div>
           </div>
@@ -985,7 +1052,10 @@ function SetupView({
   path, setPath, platform, setPlatform,
   productUrl, setProductUrl, productText, setProductText,
   imageUrls, setImageUrls,
-  foundationId, setFoundationId, hasProjectFoundation, pdfFile, setPdfFile,
+  // RETIRED with the typed Foundation-thread field: `foundationId`,
+  // `setFoundationId`, `hasProjectFoundation`. Restore them together with the
+  // state and the `Field` below.
+  pdfFile, setPdfFile, hasFoundation,
   initLoading, initError, intake, onStart,
 }) {
   function updateImageAt(i, val) {
@@ -1001,17 +1071,14 @@ function SetupView({
         <div className="font-display text-[27px] font-semibold text-navy-900 dark:text-slate-100">
           Let's look at your product page
         </div>
-        <p className="mt-1.5 text-[14px] text-navy-600 dark:text-slate-400 leading-relaxed">
-          Paste a live listing and I'll read it, or describe the product if it isn't published yet.
-          Either way I audit it against your brand and the rules your platform actually enforces.
-        </p>
 
+        {/* Title-only cards. The bodies explained what each path does at length,
+            which the titles already say — and the founder picks one either way. */}
         <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <PathCard
             active={path === 'page_scrape'}
             onClick={() => setPath('page_scrape')}
             title="Paste a product URL"
-            body="I read the live listing — its text and its whole image stack — so you don't retype a product you've already published."
           />
           <PathCard
             active={path === 'raw_input'}
@@ -1025,30 +1092,37 @@ function SetupView({
               setPlatform('other');
             }}
             title="Describe the product"
-            body="Nothing published yet? Tell me about it in your own words and add any image links. The audit tells you what your listing will need."
           />
         </div>
 
         {/* Asked only when there is a live page, for the same reason. */}
         {path === 'page_scrape' && (
           <Card title="Where does it sell?" hint="This changes what the audit checks, not just how findings are labelled.">
-            <div className="flex flex-wrap gap-2">
-              {PLATFORMS.map(({ key, label }) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setPlatform(key)}
-                  className={[
-                    'px-3.5 py-2 rounded-lg border text-[13px] font-medium transition',
-                    platform === key
-                      ? 'border-meta-600 bg-meta-50 dark:bg-meta-500/10 text-meta-700 dark:text-meta-500 ring-2 ring-meta-100 dark:ring-meta-500/20'
-                      : 'border-navy-100 dark:border-slate-600 bg-white dark:bg-slate-800 text-navy-700 dark:text-slate-200 hover:border-meta-500',
-                  ].join(' ')}
+            <Field label="Platform">
+              {/* A native <select>. It was a row of pill buttons, which read as a
+                  filter rather than as a required single choice — and the roster is
+                  a closed two-value literal on the backend, which is exactly the
+                  shape a dropdown states. Adding a third platform stays a one-line
+                  edit to `PLATFORMS`; nothing here enumerates them. */}
+              <div className="relative">
+                <select
+                  value={platform}
+                  onChange={(e) => setPlatform(e.target.value)}
+                  className="w-full appearance-none bg-white dark:bg-slate-800 border border-navy-100 dark:border-slate-600 rounded-lg pl-3 pr-9 py-2.5 text-[13.5px] text-navy-900 dark:text-slate-100 outline-none focus:border-meta-600 focus:ring-2 focus:ring-meta-100 dark:focus:ring-meta-500/20 transition cursor-pointer"
                 >
-                  {label}
-                </button>
-              ))}
-            </div>
+                  {PLATFORMS.map(({ key, label }) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-navy-400 dark:text-slate-500">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                </span>
+              </div>
+            </Field>
             {platform === 'other' && (
               <div className="mt-2 text-[11.5px] text-navy-600 dark:text-slate-400">
                 No platform rules are recorded for other storefronts, so the audit judges the page on
@@ -1132,33 +1206,38 @@ function SetupView({
           )}
         </Card>
 
-        <Card
-          title="Brand context"
-          hint="The audit speaks in your brand's voice and positioning, so it needs your Company Blueprint — from the project that built it, or from a PDF. Pick either one."
+        {/* RETIRED — the typed Foundation-thread field and the "or" divider that
+            separated it from the PDF. The Meta Ad screen never asked for one, and
+            neither does this: a project session sends its thread id from the prop,
+            and the standalone entry has no id a founder could know. Kept for
+            restore; uncomment with the `foundationId` state and the
+            `hasProjectFoundation` prop, all three together.
+
+        <Field
+          label={
+            hasProjectFoundation
+              ? 'Company Blueprint project (connected)'
+              : 'Company Blueprint project ID'
+          }
         >
-          <Field
-            label={
-              hasProjectFoundation
-                ? 'Company Blueprint project (connected)'
-                : 'Company Blueprint project ID'
-            }
-          >
-            <input
-              type="text"
-              value={foundationId}
-              onChange={(e) => setFoundationId(e.target.value)}
-              disabled={!!pdfFile}
-              placeholder="Paste the ID of the project that built your blueprint"
-              className="w-full font-mono bg-white dark:bg-slate-800 border border-navy-100 dark:border-slate-600 rounded-lg px-3 py-2 text-[12.5px] text-navy-900 dark:text-slate-100 placeholder:font-sans placeholder:text-navy-400 dark:placeholder:text-slate-500 outline-none focus:border-meta-600 focus:ring-2 focus:ring-meta-100 dark:focus:ring-meta-500/20 transition disabled:opacity-50"
-            />
-          </Field>
+          <input
+            type="text"
+            value={foundationId}
+            onChange={(e) => setFoundationId(e.target.value)}
+            disabled={!!pdfFile}
+            placeholder="Paste the ID of the project that built your blueprint"
+            className="w-full font-mono bg-white dark:bg-slate-800 border border-navy-100 dark:border-slate-600 rounded-lg px-3 py-2 text-[12.5px] text-navy-900 dark:text-slate-100 placeholder:font-sans placeholder:text-navy-400 dark:placeholder:text-slate-500 outline-none focus:border-meta-600 focus:ring-2 focus:ring-meta-100 dark:focus:ring-meta-500/20 transition disabled:opacity-50"
+          />
+        </Field>
 
-          <div className="my-3 flex items-center gap-3 text-[11px] uppercase tracking-wider text-navy-400 dark:text-slate-500">
-            <span className="h-px flex-1 bg-navy-100 dark:bg-slate-700" />
-            or
-            <span className="h-px flex-1 bg-navy-100 dark:bg-slate-700" />
-          </div>
+        <div className="my-3 flex items-center gap-3 text-[11px] uppercase tracking-wider text-navy-400 dark:text-slate-500">
+          <span className="h-px flex-1 bg-navy-100 dark:bg-slate-700" />
+          or
+          <span className="h-px flex-1 bg-navy-100 dark:bg-slate-700" />
+        </div>
+        */}
 
+        <Card title="Brand blueprint (optional)">
           <Field label="Company Blueprint PDF">
             <input
               type="file"
@@ -1166,13 +1245,6 @@ function SetupView({
               onChange={(e) => setPdfFile(e.target.files?.[0] || null)}
               className="w-full text-[12.5px] text-navy-700 dark:text-slate-200 file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-meta-600 file:text-white file:text-[12.5px] file:cursor-pointer hover:file:bg-meta-700"
             />
-            {pdfFile && (
-              <div className="mt-1.5 text-[11.5px] text-navy-600 dark:text-slate-400">
-                Using <span className="font-medium">{pdfFile.name}</span> for brand context, in place
-                of any connected project. Reading your page can't report live progress on this route
-                — it just takes a moment.
-              </div>
-            )}
           </Field>
         </Card>
 
@@ -1182,7 +1254,13 @@ function SetupView({
           </div>
         )}
 
-        {initLoading && <IntakeProgress path={path} intake={intake} withWebhooks={!pdfFile} />}
+        {/* Stages arrive only on the JSON `/init`, which needs a Foundation thread.
+            A chosen PDF, or no project behind this screen at all, means the
+            multipart entry — and that one carries no webhook config. Same
+            condition `handleStart` routes on, kept in step with it. */}
+        {initLoading && (
+          <IntakeProgress path={path} intake={intake} withWebhooks={!pdfFile && hasFoundation} />
+        )}
 
         <div className="mt-5 flex justify-end">
           <button
@@ -1267,7 +1345,7 @@ function IntakeProgress({ path, intake, withWebhooks }) {
       </ol>
       {!withWebhooks && (
         <div className="mt-1 text-[11.5px] text-navy-600 dark:text-slate-500">
-          Live progress isn't available on the Blueprint PDF route — this stays put until it's done.
+          Live progress isn't available on this route — this stays put until it's done.
         </div>
       )}
     </section>
@@ -1292,7 +1370,11 @@ function PathCard({ active, onClick, title, body }) {
         </div>
         {active && <IconCheck width={16} height={16} className="text-meta-600" />}
       </div>
-      <p className="mt-1.5 text-[12.5px] text-navy-600 dark:text-slate-400 leading-relaxed">{body}</p>
+      {/* Guarded: both cards are title-only now, and an unguarded <p> would still
+          lay out its top margin, leaving a taller card padded by nothing. */}
+      {body && (
+        <p className="mt-1.5 text-[12.5px] text-navy-600 dark:text-slate-400 leading-relaxed">{body}</p>
+      )}
     </button>
   );
 }
@@ -1308,7 +1390,10 @@ function Card({ title, hint, children }) {
           {hint}
         </p>
       )}
-      {children}
+      {/* The hint carries the gap under the title when there is one. A hintless
+          card (the blueprint upload) has to supply it, or its first field label
+          sits flush against the heading. */}
+      <div className={hint ? undefined : 'mt-3'}>{children}</div>
     </section>
   );
 }
@@ -1343,7 +1428,15 @@ function Field({ label, children }) {
 // =============================================================
 
 function Canvas({
-  audit, auditAreas, strategy, scout, content, imageSets, canvasSel, onPickCanvas, researching,
+  audit, auditAreas, strategy, scout, content, imageSets, canvasSel, onPickCanvas,
+  // Which specialists are working and what each is doing, keyed by tab key. Replaces
+  // the single `researching` boolean that used to be forwarded to all four views —
+  // see `CanvasEmpty`.
+  running,
+  // The canvas edit boxes. `onUpdate` is the screen's `sendTurn` — display text
+  // and positioned endpoint text — and `busy` disables every box while a turn is
+  // already running. Both are destructured for the reason stated below.
+  onUpdate, busy,
 }) {
   // The captured product, then the whole four-specialist arc — three of the four
   // are live, and the arc is shown in full so a founder can see where this goes.
@@ -1381,14 +1474,23 @@ function Canvas({
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto thin-scroll">
+        {/* Each view is handed ITS OWN specialist's state, never the turn's:
+            `running[key]` is truthy only while that node is working, and its value
+            is that node's live status line. */}
         {canvasSel === 'auditor' ? (
-          <AuditView audit={audit} areas={auditAreas} researching={researching} />
+          <AuditView audit={audit} areas={auditAreas} note={running?.auditor} />
         ) : canvasSel === 'scout' ? (
-          <ScoutView scout={scout} researching={researching} />
+          <ScoutView scout={scout} note={running?.scout} />
         ) : canvasSel === 'strategist' ? (
-          <StrategyView strategy={strategy} researching={researching} />
+          <StrategyView strategy={strategy} note={running?.strategist} />
         ) : canvasSel === 'studio' ? (
-          <StudioView content={content} imageSets={imageSets} researching={researching} />
+          <StudioView
+            content={content}
+            imageSets={imageSets}
+            note={running?.studio}
+            onUpdate={onUpdate}
+            busy={busy}
+          />
         ) : (
           <SpecialistStub sel={canvasSel} />
         )}
@@ -1615,20 +1717,58 @@ function HtmlDoc({ html, title }) {
   );
 }
 
-// An empty state shared by both artifact tabs.
-function CanvasEmpty({ busy, busyTitle, busyBody, idleTitle, idleBody }) {
+// The empty state every specialist tab shares — idle, or WORKING.
+//
+// `busy` is now that ONE specialist's own state, never the turn's. A tab says it is
+// working only when its own node is running, which is what stops a turn that ran
+// the Auditor alone from putting a spinner and "Mapping the competitor field…" on
+// the Scout and Strategist tabs at the same time.
+//
+// `note` is the live line for that specialist — the SSE frame's opener at first,
+// refined by each of its own progress webhooks as they land. `progress` is an
+// optional extra line a tab can add for something only it knows (the audit's
+// "N of 4 areas are in").
+function CanvasEmpty({ busy, busyTitle, busyBody, idleTitle, idleBody, note, progress }) {
   return (
     <div className="h-full grid place-items-center p-10 text-center">
-      <div className="max-w-[440px]">
-        <div className="mx-auto h-12 w-12 rounded-2xl bg-navy-900 grid place-items-center text-mint-500">
+      <div className="max-w-[460px]">
+        <div
+          className={[
+            'relative mx-auto h-12 w-12 rounded-2xl grid place-items-center',
+            busy ? 'bg-navy-900 text-mint-500' : 'bg-navy-900 text-mint-500',
+          ].join(' ')}
+        >
           <IconCompass width={22} height={22} />
+          {/* The ring rides OUTSIDE the tile rather than replacing the mark, so the
+              tab keeps its identity while it works — a spinner alone reads as a
+              page that has not decided what it is yet. */}
+          {busy && (
+            <span className="absolute -inset-1.5 rounded-[18px] border-2 border-transparent border-t-mint-500 border-r-mint-500/40 animate-spin" />
+          )}
         </div>
-        <div className="mt-3 font-display text-[18px] font-semibold text-navy-900 dark:text-slate-100">
+
+        <div className="mt-4 font-display text-[18px] font-semibold text-navy-900 dark:text-slate-100">
           {busy ? busyTitle : idleTitle}
         </div>
         <p className="mt-1.5 text-[13px] text-navy-600 dark:text-slate-400 leading-relaxed">
           {busy ? busyBody : idleBody}
         </p>
+
+        {/* The live line, only while this specialist is actually working. Dots
+            animate so a long step still looks alive when the text has not changed
+            for minutes — which the Scout and the Studio both routinely do. */}
+        {busy && !isBlank(note) && (
+          <div className="mt-4 inline-flex items-start gap-2 rounded-xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-left shadow-card">
+            <span className="mt-[3px] h-3.5 w-3.5 shrink-0 rounded-full border-2 border-meta-100 dark:border-slate-600 border-t-meta-600 dark:border-t-meta-500 animate-spin" />
+            <span className="text-[12.5px] text-navy-700 dark:text-slate-300 leading-snug">
+              {note}
+            </span>
+          </div>
+        )}
+
+        {busy && !isBlank(progress) && (
+          <div className="mt-2 text-[11.5px] text-navy-500 dark:text-slate-400">{progress}</div>
+        )}
       </div>
     </div>
   );
@@ -1637,13 +1777,14 @@ function CanvasEmpty({ busy, busyTitle, busyBody, idleTitle, idleBody }) {
 // The strategy — what the page SHOULD say and show. One document, rewritten whole
 // every time the Strategist runs, so there is nothing to merge and nothing to
 // select inside it.
-function StrategyView({ strategy, researching }) {
+function StrategyView({ strategy, note }) {
   const html = strategy?.html;
 
   if (!html) {
     return (
       <CanvasEmpty
-        busy={researching}
+        busy={Boolean(note)}
+        note={note}
         busyTitle="Writing your strategy…"
         busyBody="It reads the audit, your product, your answers and your images, then writes the plan in one pass."
         idleTitle="No strategy yet"
@@ -1671,13 +1812,14 @@ function StrategyView({ strategy, researching }) {
 //
 // `scout.analysis` still rides the wire — it is what the CMO and the Strategist
 // read as a text digest — it simply is not a second rendering of this page.
-function ScoutView({ scout, researching }) {
+function ScoutView({ scout, note }) {
   const html = scout?.html;
 
   if (!html) {
     return (
       <CanvasEmpty
-        busy={researching}
+        busy={Boolean(note)}
+        note={note}
         busyTitle="Mapping the competitor field…"
         busyBody="It searches the category, then reads the winning product pages one by one. This is the slowest step — a few minutes is normal."
         idleTitle="No competitor field yet"
@@ -1921,11 +2063,646 @@ function AmazonContent({ amazon }) {
   );
 }
 
+// =============================================================
+// THE PAGE PREVIEW — the Studio's own schema, laid out as the page it describes.
+//
+// Two renderers, and the split is the SAME one the backend makes with two content
+// schemas and two prompts: **Amazon is a fixed FORM**, so its chrome is knowable
+// and drawn exactly; **every other storefront is a CANVAS**, so its page is built
+// from `blocks` in the order they were written, which IS the page order.
+//
+// Nothing is generated to do this. Every word comes from `PdpContent` and every
+// picture from `PdpImageSets`, which the browser already holds — including the
+// bytes, which is why this works at all: a generated picture exists ONLY as a
+// `data_uri`, so nothing that had to be authored elsewhere could show one.
+//
+// **The preview never invents.** A PDP shows a price, a rating and a stock state;
+// the Studio writes none of the three and `state.listing` never reaches this
+// screen. So those render as inert placeholders that say where the value comes
+// from, rather than as plausible numbers — the same rule ADR-0004 puts on the
+// audit. Same for a call to action: it is drawn, and it does nothing.
+// =============================================================
+
+// =============================================================
+// SIMULATED-DESTINATION STYLING
+//
+// Everything below this line that a preview renders is styled to look like the
+// SITE it previews, not like this app. That is a deliberate break from the design
+// system, and the values are hardcoded hex rather than palette tokens for exactly
+// that reason: a token would follow our brand when it changed, and the whole point
+// is that a founder judging their Amazon listing sees Amazon.
+//
+// Neither preview follows the app's dark mode. Amazon has none, and a storefront
+// preview that inverted would stop resembling the page being previewed. `SiteFrame`
+// is what makes that read as deliberate — a browser shell around a light rectangle
+// says "another site", where a bare light panel in a dark app says "broken".
+// =============================================================
+
+// Amazon's own type stack. Ember is theirs and will not resolve here; Arial is what
+// Amazon itself falls back to, so the fallback IS the authentic second choice.
+const AMZ_FONT = { fontFamily: '"Amazon Ember", Arial, sans-serif' };
+
+// The storefront palette — warm off-white ground, near-black ink, one restrained
+// accent. Not our navy/mint: a founder is judging their page, and a page wearing
+// our chrome is hard to judge as theirs.
+const STORE_FONT = { fontFamily: 'Inter, "Helvetica Neue", Helvetica, Arial, sans-serif' };
+const STORE_BG = '#FBFAF8';
+const STORE_INK = '#16161A';
+const STORE_BODY = '#3F3F46';
+const STORE_MUTED = '#8A8A94';
+const STORE_RULE = '#E6E3DE';
+const STORE_ACCENT = '#1F6F5C';
+
+// A browser shell around a previewed page. It is not decoration: it is what tells a
+// founder the rectangle is a SIMULATION of their live page rather than another
+// panel of this tool, which is what lets the contents abandon the app's styling
+// entirely without looking broken.
+function SiteFrame({ host, path, children }) {
+  return (
+    <div className="rounded-2xl overflow-hidden border border-navy-100 dark:border-slate-700 shadow-card bg-white">
+      <div className="flex items-center gap-2 px-3 py-2 bg-navy-50 dark:bg-slate-800 border-b border-navy-100 dark:border-slate-700">
+        <span className="flex gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-full bg-[#FF5F57]" />
+          <span className="h-2.5 w-2.5 rounded-full bg-[#FEBC2E]" />
+          <span className="h-2.5 w-2.5 rounded-full bg-[#28C840]" />
+        </span>
+        <span className="flex-1 mx-2 rounded-md bg-white dark:bg-slate-900 px-2.5 py-1 text-[11px] text-navy-500 dark:text-slate-400 truncate">
+          {host}
+          <span className="text-navy-400 dark:text-slate-500">{path}</span>
+        </span>
+        <span className="text-[10px] uppercase tracking-wide text-navy-400 dark:text-slate-500">
+          Preview
+        </span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// Amazon's star row. Inert — the Studio writes no rating and `state.listing` never
+// reaches this screen, so these are the shape of the thing and never a number.
+function Stars() {
+  return (
+    <span className="inline-flex items-center gap-[1px]" aria-hidden="true">
+      {[0, 1, 2, 3, 4].map((i) => (
+        <svg key={i} width="15" height="15" viewBox="0 0 24 24" fill="#FFA41C">
+          <path d="M12 17.3 5.8 21l1.6-7L2 9.2l7.1-.6L12 2l2.9 6.6 7.1.6-5.4 4.8 1.6 7z" />
+        </svg>
+      ))}
+    </span>
+  );
+}
+
+// Amazon's hairline section rule.
+function Rule() {
+  return <hr className="my-3" style={{ border: 0, borderTop: '1px solid #E7E7E7' }} />;
+}
+
+// The toggle under a collapsed section. Split out from the sections themselves
+// because a table cannot hold it — a <button> as a sibling of <tr> inside <tbody>
+// is invalid markup the browser hoists out of the table.
+function MoreToggle({ open, onToggle, hidden, label, tone = 'amazon' }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="mt-3 text-[13px] font-medium"
+      style={{ color: tone === 'amazon' ? '#007185' : STORE_INK }}
+    >
+      {open ? 'Show less' : `${label} (${hidden} more)`}
+    </button>
+  );
+}
+
+// Amazon's Product information table, collapsed past ten rows.
+//
+// This is one of the two genuinely UNBOUNDED lists in the whole preview:
+// `other_attributes` is open by design — Amazon publishes a different attribute set
+// per product type, hundreds deep — so it can arrive with forty rows and turn the
+// section into a wall. The BOUNDED fields are deliberately left alone: five feature
+// bullets are five, and collapsing them would hide copy the founder is here to read.
+function AmazonDetailsTable({ details }) {
+  const [open, setOpen] = useState(false);
+  const LIMIT = 10;
+  const rows = open ? details : details.slice(0, LIMIT);
+  return (
+    <>
+      <table className="mt-3 w-full border-collapse">
+        <tbody>
+          {rows.map((p, i) => (
+            <tr key={`${p.name}-${i}`}>
+              <th
+                className="text-left align-top text-[14px] font-bold py-2 pr-4 w-[38%]"
+                style={{ background: '#F7F8F8', color: '#0F1111', borderBottom: '1px solid #FFFFFF' }}
+              >
+                <span className="px-2.5 inline-block">{p.name}</span>
+              </th>
+              <td
+                className="align-top text-[14px] py-2 px-2.5"
+                style={{ color: '#0F1111', borderBottom: '1px solid #E7E7E7' }}
+              >
+                {p.value}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {details.length > LIMIT && (
+        <MoreToggle
+          open={open}
+          onToggle={() => setOpen((v) => !v)}
+          hidden={details.length - LIMIT}
+          label="See more product details"
+        />
+      )}
+    </>
+  );
+}
+
+// The edit affordance INSIDE a simulated page. Same behaviour as `UpdateBox` — it
+// is that component — but collapsed to a quiet pencil so the page still reads as
+// the page. A blue Growvana button in the middle of an Amazon listing would wreck
+// the one thing this view exists to do.
+function SubtleEdit(props) {
+  return <UpdateBox {...props} tone="subtle" />;
+}
+
+function EditIcon(props) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+// Per-section "Update" affordance, the Meta Ad screen's `UpdateBox` component
+// brought over unchanged in shape: collapsed to a button, opens an instruction
+// box, and on send hands `onUpdate` BOTH the founder's words (for the chat) and a
+// composed, positioned message (for the endpoint).
+//
+// `compose` is what makes it worth having. The Studio addresses content by PATH
+// and a picture by set + slot, and a founder should never have to type either —
+// so each call site composes the addressing from the very keys it is already
+// rendering, in the Studio's own vocabulary.
+function UpdateBox({ label, placeholder, compose, onUpdate, busy, tone = 'default' }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  if (!onUpdate) return null;
+  const submit = () => {
+    const t = text.trim();
+    if (!t) return;
+    onUpdate(t, compose(t));
+    setText('');
+    setOpen(false);
+  };
+  if (!open) {
+    // `subtle` is the tone used inside a simulated page: a quiet grey pencil that
+    // does not fight the page's own styling. `default` is the app's own blue, used
+    // in the Fields view and under "Not visible to shoppers", where there is no
+    // simulation to protect.
+    const subtle = tone === 'subtle';
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        disabled={busy}
+        className={
+          subtle
+            ? 'inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-black/10 bg-black/[0.03] text-black/55 hover:bg-black/[0.07] hover:text-black/80 text-[11px] font-medium transition disabled:opacity-40 disabled:cursor-not-allowed'
+            : 'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-meta-200 dark:border-slate-600 bg-meta-50 dark:bg-slate-800 text-meta-700 dark:text-slate-200 hover:bg-meta-100 dark:hover:bg-slate-700 text-[11.5px] font-medium transition disabled:opacity-50 disabled:cursor-not-allowed'
+        }
+      >
+        <EditIcon /> {subtle ? `Edit ${label}` : `Update ${label}`}
+      </button>
+    );
+  }
+  return (
+    <div className="rounded-xl border border-meta-200 dark:border-slate-600 bg-meta-50/60 dark:bg-slate-800/60 p-3">
+      <textarea
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit();
+          if (e.key === 'Escape') { setOpen(false); setText(''); }
+        }}
+        placeholder={placeholder}
+        rows={2}
+        className="w-full resize-none bg-white dark:bg-slate-900 border border-navy-100 dark:border-slate-600 rounded-lg px-3 py-2 text-[13px] text-navy-900 dark:text-slate-100 placeholder:text-navy-400 dark:placeholder:text-slate-500 outline-none focus:border-meta-600 focus:ring-2 focus:ring-meta-100 dark:focus:ring-meta-500/20 transition"
+      />
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={submit}
+          disabled={busy || !text.trim()}
+          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-meta-600 hover:bg-meta-700 text-white text-[12px] font-medium shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          Send to agent
+        </button>
+        <button
+          type="button"
+          onClick={() => { setOpen(false); setText(''); }}
+          className="px-3 py-1.5 rounded-lg text-[12px] font-medium text-navy-500 dark:text-slate-400 hover:bg-navy-50 dark:hover:bg-slate-800 transition"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Whether a picture is one of the founder's own or one the Studio made. Asked for
+// explicitly, and it has to travel with the picture rather than sit in a legend:
+// a founder scanning a gallery is deciding which shots still need taking, and a
+// generated one they have not approved is the thing they most need to spot.
+function SourceBadge({ source, className = '' }) {
+  const generated = source === 'generated';
+  return (
+    <span
+      /* Neutral rather than brand-coloured: these sit ON TOP of a simulated Amazon
+         or storefront page, and a Growvana blue chip in that corner is the kind of
+         detail that stops the page reading as the page. Black/white reads as an
+         overlay on any ground. */
+      className={[
+        'shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-md backdrop-blur-sm',
+        generated ? 'text-white' : 'text-black/75',
+        className,
+      ].join(' ')}
+      style={{
+        background: generated ? 'rgba(0,0,0,.72)' : 'rgba(255,255,255,.92)',
+        border: `1px solid ${generated ? 'rgba(0,0,0,.72)' : 'rgba(0,0,0,.14)'}`,
+      }}
+      title={
+        generated
+          ? 'Made for you by the Studio — not yet a real photograph'
+          : "An existing photograph — one the product page already had"
+      }
+    >
+      {generated ? 'AI generated' : 'Existing'}
+    </span>
+  );
+}
+
+// Every picture in a category group, flattened into the order a gallery shows
+// them: set order, then slot order. One category legitimately spans several sets
+// (one per shape), and a gallery does not care — it shows them all in sequence.
+function groupPictures(group) {
+  const out = [];
+  for (const set of group?.sets || []) {
+    for (const slot of set.slots || []) {
+      const current = currentVersion(slot);
+      const src = versionSrc(current);
+      if (src) out.push({ set, slot, current, src, key: `${set.set_key}::${slot.slot_key}` });
+    }
+  }
+  return out;
+}
+
+// Which group is the gallery — the pictures that sit at the top of the page.
+//
+// Categories are FREE TEXT on both sides (the Images area names them, the Studio
+// copies the name across), so this matches loosely and falls back to the first
+// group. Getting it wrong costs a founder seeing their benefit graphics in the
+// hero rail instead of their pack shots; it can never hide a picture, because
+// every other group is rendered below in full.
+const GALLERY_CATEGORY_RE = /gallery|main|hero|product\s*shot|primary/i;
+
+function pickGallery(groups) {
+  if (!groups?.length) return { gallery: null, rest: [] };
+  const idx = groups.findIndex((g) => GALLERY_CATEGORY_RE.test(g.category));
+  const at = idx >= 0 ? idx : 0;
+  return { gallery: groups[at], rest: groups.filter((_, i) => i !== at) };
+}
+
+// A picture's takes, oldest first, and which one is being previewed. Versions are
+// append-only on the backend and numbered from 1, so this sorts rather than
+// trusting array order — the webhook and the `done` frame can deliver them in
+// different orders.
+function slotTakes(slot) {
+  return [...(slot?.versions || [])].sort((a, b) => a.version - b.version);
+}
+
+// EVERY take of one slot, all on screen at once — the Meta Ad screen's
+// `SlotGallery` arrangement, brought over so the two studios read the same way: a
+// thumbnail row, a corner badge saying what each one is, and a check on the one
+// being previewed.
+//
+// Shown only when there is more than one, so a slot that was never regenerated
+// carries no chrome at all.
+//
+// **One thing differs from Meta's, and it is a real difference rather than a
+// styling choice.** There, the variants are alternatives and picking one is
+// picking what to publish. Here versions are APPEND-ONLY and the newest IS the
+// page — there is no chosen-version field on the backend to set. So this previews
+// and nothing more, and the caption says so instead of implying a choice that
+// would not survive the next `done` frame.
+function VersionStrip({ takes, at, onPick }) {
+  if (takes.length < 2) return null;
+  return (
+    <div className="mt-2">
+      <div className="flex flex-wrap gap-2">
+        {takes.map((v, i) => {
+          const src = versionSrc(v);
+          const chosen = i === at;
+          const existing = v.source === 'existing';
+          return (
+            <button
+              key={v.version}
+              type="button"
+              onClick={() => onPick(i)}
+              title={v.direction || (existing ? 'Existing photograph' : `Made for you — version ${v.version}`)}
+              /* Neutral, like `SourceBadge` and for the same reason: this strip sits
+                 inside a simulated page, so it must not wear our brand. */
+              className="relative rounded-lg overflow-hidden transition bg-white"
+              style={{
+                border: chosen ? '2px solid rgba(0,0,0,.8)' : '1px solid rgba(0,0,0,.14)',
+                padding: chosen ? 0 : '1px',
+              }}
+            >
+              {src ? (
+                <img src={src} alt="" loading="lazy" className="block h-14 w-14 object-cover" />
+              ) : (
+                <div className="h-14 w-14 grid place-items-center text-[10px] text-black/40">
+                  no preview
+                </div>
+              )}
+              <span
+                className="absolute top-1 left-1 px-1 py-0.5 rounded text-[9px] font-semibold leading-none text-white"
+                style={{ background: existing ? 'rgba(0,0,0,.62)' : 'rgba(0,0,0,.82)' }}
+              >
+                {existing ? 'Existing' : `v${v.version}`}
+              </span>
+              {chosen && (
+                <span
+                  className="absolute top-1 right-1 h-4 w-4 grid place-items-center rounded-full text-white"
+                  style={{ background: 'rgba(0,0,0,.82)' }}
+                >
+                  <IconCheck width={10} height={10} />
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 text-[11px] text-black/50">
+        {takes.length} takes — the newest is what the page shows. Ask for an earlier one back if
+        you prefer it.
+      </div>
+    </div>
+  );
+}
+
+// The hero gallery: one large picture and a thumbnail rail, the arrangement every
+// storefront and every marketplace uses. Selection is local — it is a way of
+// looking at the pictures, not a decision about the page.
+// `variant` styles the frame to match whichever site is being simulated: Amazon's
+// square white stage with its orange selected-thumb ring (#E77600 with the glow it
+// actually uses), or the storefront's tall soft-cornered stage on the warm ground.
+// It changes chrome only — never which pictures are shown or in what order.
+function PreviewGallery({ group, onUpdate, busy, variant = 'amazon' }) {
+  const amz = variant === 'amazon';
+  const pictures = groupPictures(group);
+  const [at, setAt] = useState(0);
+  // Which take of each picture is on show, keyed by `set::slot`. Per picture
+  // rather than one shared index: the slots have different version counts, so a
+  // single index would jump around as the founder moves along the rail.
+  const [verAt, setVerAt] = useState({});
+
+  if (!pictures.length) {
+    return (
+      <div className="aspect-square rounded-xl bg-navy-50 dark:bg-slate-800 grid place-items-center">
+        <span className="text-[12px] text-navy-500 dark:text-slate-400">No pictures yet</span>
+      </div>
+    );
+  }
+
+  const active = pictures[Math.min(at, pictures.length - 1)];
+  const takes = slotTakes(active.slot);
+  const verIdx = verAt[active.key] != null ? Math.min(verAt[active.key], takes.length - 1) : takes.length - 1;
+  const shown = takes[verIdx] || active.current;
+  const shownSrc = versionSrc(shown) || active.src;
+
+  const selected = Math.min(at, pictures.length - 1);
+  const rail = (
+    <div className="flex gap-2 shrink-0 flex-row sm:flex-col overflow-x-auto sm:overflow-visible thin-scroll">
+      {pictures.map((p, i) => (
+        <button
+          key={p.key}
+          type="button"
+          onMouseEnter={() => setAt(i)}
+          onFocus={() => setAt(i)}
+          onClick={() => setAt(i)}
+          aria-label={p.current?.alt_text || p.slot.label || `Picture ${i + 1}`}
+          className={[
+            'relative shrink-0 overflow-hidden transition bg-white',
+            amz ? 'h-[48px] w-[48px] rounded-[8px]' : 'h-[60px] w-[60px] rounded-[10px]',
+          ].join(' ')}
+          style={
+            amz
+              ? i === selected
+                ? { border: '2px solid #E77600', boxShadow: '0 0 3px 2px rgba(228,121,17,.5)' }
+                : { border: '1px solid #D5D9D9' }
+              : {
+                  border: `1px solid ${i === selected ? STORE_INK : STORE_RULE}`,
+                  outline: i === selected ? `1px solid ${STORE_INK}` : 'none',
+                }
+          }
+        >
+          <img src={p.src} alt="" loading="lazy" className="h-full w-full object-cover" />
+          {p.current?.source === 'generated' && (
+            <span
+              className="absolute bottom-0 inset-x-0 text-[8px] font-semibold leading-[11px] text-center text-white"
+              style={{ background: 'rgba(0,0,0,.62)' }}
+            >
+              AI
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="flex gap-3 flex-col-reverse sm:flex-row">
+      {rail}
+      <div className="relative flex-1 min-w-0">
+        {/* Height-capped as well as aspect-locked. Without the cap a wide pane makes
+            the stage as tall as it is wide, which pushes everything beside it down
+            and is what left a screen of white under the picture. */}
+        <div
+          className={[
+            'overflow-hidden grid place-items-center bg-white',
+            amz ? 'aspect-square rounded-[4px] max-h-[380px]' : 'aspect-[4/5] rounded-[14px] max-h-[520px]',
+          ].join(' ')}
+          style={amz ? { border: '1px solid #E7E7E7' } : { border: `1px solid ${STORE_RULE}` }}
+        >
+          <img
+            src={shownSrc}
+            /* The published line, so it is the real alt rather than an empty one. */
+            alt={shown?.alt_text || active.slot.label || ''}
+            className="h-full w-full object-contain"
+          />
+        </div>
+        <div className="absolute top-2 right-2">
+          <SourceBadge source={shown?.source} />
+        </div>
+        {!isBlank(active.slot.label) && (
+          <div
+            className="mt-2 text-[11.5px] truncate"
+            style={{ color: amz ? '#565959' : STORE_MUTED }}
+          >
+            {active.slot.label}
+          </div>
+        )}
+        <VersionStrip
+          takes={takes}
+          at={verIdx}
+          onPick={(i) => setVerAt((prev) => ({ ...prev, [active.key]: i }))}
+        />
+        {/* Addressed by set + slot, which IS `PdpImageRef` — the same two strings
+            `generate_pdp_images` takes. The founder types the change; the handle
+            comes from the picture they are looking at. */}
+        <div className="mt-2">
+          <SubtleEdit
+            label="this picture"
+            placeholder="e.g. brighter background, show it in a hand for scale, no text on the image…"
+            onUpdate={onUpdate}
+            busy={busy}
+            compose={(instr) =>
+              `Regenerate the picture in image set "${active.set.set_key}", slot "${active.slot.slot_key}"` +
+              `${shown?.version ? ` (from version ${shown.version})` : ''}: ${instr}`
+            }
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// A band of pictures that are not the gallery — benefit graphics, comparison
+// charts, a facts panel. Rendered where they sit on a real page: below the fold,
+// in the order their categories were seeded.
+function PreviewImageBand({ group, onUpdate, busy, variant = 'amazon' }) {
+  const amz = variant === 'amazon';
+  const pictures = groupPictures(group);
+  if (!pictures.length) return null;
+  return (
+    <section className={amz ? 'mt-8 pt-6' : 'mt-14'} style={amz ? { borderTop: '1px solid #E7E7E7' } : undefined}>
+      <h3
+        className={amz ? 'text-[21px] font-bold' : 'text-[24px] font-semibold tracking-[-0.01em]'}
+        style={{ color: amz ? '#0F1111' : STORE_INK }}
+      >
+        {group.category}
+      </h3>
+      {!amz && <div className="mt-3 h-px w-10" style={{ background: STORE_INK, opacity: 0.35 }} />}
+      <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-4">
+        {pictures.map((p) => (
+          <BandPicture key={p.key} picture={p} onUpdate={onUpdate} busy={busy} variant={variant} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// One picture outside the hero rail, with the SAME affordances the hero has:
+// every take reachable, the source stated, and its own update box. Its own
+// component purely so each picture owns its selected version — a shared index
+// across a grid would move every picture at once.
+function BandPicture({ picture, onUpdate, busy, variant = 'amazon' }) {
+  const amz = variant === 'amazon';
+  const takes = slotTakes(picture.slot);
+  const [verIdx, setVerIdx] = useState(takes.length - 1);
+  const at = Math.min(verIdx, takes.length - 1);
+  const shown = takes[at] || picture.current;
+  const src = versionSrc(shown) || picture.src;
+
+  return (
+    <figure className="relative">
+      <div
+        className={['overflow-hidden bg-white', amz ? 'rounded-[4px]' : 'rounded-[12px]'].join(' ')}
+        style={{ border: `1px solid ${amz ? '#E7E7E7' : STORE_RULE}` }}
+      >
+        <img
+          src={src}
+          alt={shown?.alt_text || picture.slot.label || ''}
+          loading="lazy"
+          className="w-full object-contain"
+        />
+      </div>
+      <div className="absolute top-1.5 right-1.5">
+        <SourceBadge source={shown?.source} />
+      </div>
+      <figcaption
+        className="mt-1.5 text-[11.5px] truncate"
+        style={{ color: amz ? '#565959' : STORE_MUTED }}
+      >
+        {picture.slot.label || humanize(picture.slot.slot_key)}
+      </figcaption>
+      <VersionStrip takes={takes} at={at} onPick={setVerIdx} />
+      <div className="mt-1.5">
+        <SubtleEdit
+          label="picture"
+          placeholder="e.g. make the text larger, use the brand's green, show the pack open…"
+          onUpdate={onUpdate}
+          busy={busy}
+          compose={(instr) =>
+            `Regenerate the picture in image set "${picture.set.set_key}", slot "${picture.slot.slot_key}"` +
+            `${shown?.version ? ` (from version ${shown.version})` : ''}: ${instr}`
+          }
+        />
+      </div>
+    </figure>
+  );
+}
+
+// RETIRED — `InertValue`, a dashed chip for a value the page cannot supply. It was
+// right while the previews wore the app's styling; once they became simulations of
+// Amazon and of a storefront it stopped being, because a dashed placeholder chip is
+// exactly the kind of detail that breaks the illusion. Each preview now draws the
+// missing value in ITS OWN idiom instead — Amazon's greyed `$––` in the buy box,
+// the storefront's large muted `$––` beside a one-line note — which reads as a real
+// page with the price not yet set rather than as a form with an empty field.
+//
+// The RULE it enforced is unchanged and still holds in both: the Studio writes no
+// price, rating or stock state, `state.listing` never reaches this screen, and
+// neither preview may invent one (ADR-0004).
+//
+// function InertValue({ children }) {
+//   return (
+//     <span className="inline-block rounded border border-dashed border-navy-200 dark:border-slate-600 px-2 py-0.5 text-[11.5px] text-navy-500 dark:text-slate-400">
+//       {children}
+//     </span>
+//   );
+// }
+
+// What the Studio wrote that a SHOPPER never sees — Amazon's backend search terms
+// and A+ tier note, a storefront's metadata block. Kept out of the page body
+// deliberately: rendering seller-side fields as page sections would misrepresent
+// what the page looks like, which is the one job this view has.
+function SellerOnly({ children }) {
+  return (
+    <section className="mt-8 rounded-xl border border-dashed border-navy-200 dark:border-slate-600 bg-mist dark:bg-slate-800/40 p-4">
+      <div className="text-[10.5px] font-semibold uppercase tracking-wide text-navy-500 dark:text-slate-400">
+        Not visible to shoppers
+      </div>
+      <p className="mt-0.5 text-[11.5px] text-navy-600 dark:text-slate-400">
+        Written for you to enter, not for the page to show.
+      </p>
+      <div className="mt-2">{children}</div>
+    </section>
+  );
+}
+
 // One picture: its newest take, with its own version history underneath.
-function ImageSlotCard({ slot, ratio }) {
-  const current = currentVersion(slot);
+function ImageSlotCard({ slot, ratio, setKey, onUpdate, busy }) {
+  const allTakes = slotTakes(slot);
+  // Which take this card is showing. Defaults to the newest, exactly as the page
+  // preview does, so the two views never disagree about what is live.
+  const [verIdx, setVerIdx] = useState(allTakes.length - 1);
+  const at = Math.min(verIdx, allTakes.length - 1);
+  const current = allTakes[at] || currentVersion(slot);
   const src = versionSrc(current);
-  const takes = slot.versions?.length || 0;
   return (
     <div className="rounded-xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden">
       <div className="aspect-square bg-navy-50 dark:bg-slate-800 grid place-items-center overflow-hidden">
@@ -1952,10 +2729,8 @@ function ImageSlotCard({ slot, ratio }) {
           </span>
         </div>
         <div className="mt-1 flex items-center gap-2 text-[11px] text-navy-600 dark:text-slate-400">
-          <span>
-            {current?.source === 'existing' ? 'Your photograph' : 'Made for you'}
-          </span>
-          {takes > 1 && <span>· {takes} versions</span>}
+          <span>{current?.source === 'existing' ? 'Existing photograph' : 'AI generated'}</span>
+          {allTakes.length > 1 && <span>· {allTakes.length} takes</span>}
         </div>
         {!isBlank(current?.alt_text) && (
           <div className="mt-2">
@@ -1970,40 +2745,801 @@ function ImageSlotCard({ slot, ratio }) {
             </p>
           </div>
         )}
-        {/* Every earlier take, kept. Versions are append-only on the backend
-            precisely so the lineage stays readable, and hiding it here would throw
-            that away — a founder who preferred v1 needs to be able to find it. */}
-        {takes > 1 && (
-          <details className="mt-2">
-            <summary className="cursor-pointer text-[11px] text-meta-700 dark:text-meta-500 select-none">
-              Earlier versions
-            </summary>
-            <div className="mt-2 flex gap-2 flex-wrap">
-              {[...slot.versions]
-                .sort((a, b) => a.version - b.version)
-                .slice(0, -1)
-                .map((v) => {
-                  const thumb = versionSrc(v);
-                  return thumb ? (
-                    <img
-                      key={v.version}
-                      src={thumb}
-                      alt={v.alt_text || `Version ${v.version}`}
-                      title={v.direction || `Version ${v.version}`}
-                      loading="lazy"
-                      className="h-14 w-14 object-cover rounded-md border border-navy-100 dark:border-slate-700"
-                    />
-                  ) : null;
-                })}
-            </div>
-          </details>
-        )}
+        {/* Every take, kept and SHOWN — not hidden behind a disclosure any more.
+            Versions are append-only on the backend precisely so the lineage stays
+            readable, and the same strip the page preview uses reads them here, so
+            a founder sees the identical thing in both views. */}
+        <VersionStrip takes={allTakes} at={at} onPick={setVerIdx} />
+
+        <div className="mt-2">
+          <UpdateBox
+            label="picture"
+            placeholder="e.g. brighter background, show it in a hand for scale, no text on the image…"
+            onUpdate={onUpdate}
+            busy={busy}
+            compose={(instr) =>
+              `Regenerate the picture in image set "${setKey}", slot "${slot.slot_key}"` +
+              `${current?.version ? ` (from version ${current.version})` : ''}: ${instr}`
+            }
+          />
+        </div>
       </div>
     </div>
   );
 }
 
-function StudioView({ content, imageSets, researching }) {
+// AMAZON — the real page's chrome, colours and layout, not ours.
+//
+// This is a SIMULATION of the destination, so it deliberately abandons the app's
+// design system inside the frame: Amazon's own greys (#0F1111 ink, #565959 muted,
+// #D5D9D9 rules), its teal links (#007185), its orange stars (#FFA41C), its yellow
+// Add-to-Cart (#FFD814 on #FCD200) and orange Buy-Now (#FFA41C on #FF8F00), the
+// Ember/Arial stack, and the three-column desktop grid — images, centre column,
+// buy box. Values are hardcoded hex rather than palette tokens on purpose: a token
+// would drift with our brand, and the whole point is that this does not.
+//
+// **It does not follow the app's dark mode either.** Amazon has no dark mode, so a
+// preview that inverted would stop looking like the page it is previewing. The
+// frame stays light in both themes, which is why it is wrapped in a browser-chrome
+// shell — that shell reads as "another site", so a light rectangle in a dark app
+// looks deliberate rather than broken.
+//
+// Every field of `AmazonPdpContent` appears, each where Amazon puts it, except the
+// two the seller enters and a shopper never sees.
+function AmazonPagePreview({ amazon, groups, onUpdate, busy }) {
+  const { gallery, rest } = pickGallery(groups);
+  // Every field name here is the SCHEMA's, quoted, so the Studio's path executor
+  // has an exact handle to resolve — Amazon paths are validated CLOSED against
+  // `model_fields`, so a paraphrase would fail to resolve where the real name
+  // cannot.
+  const editField = (name, human) => (instr) =>
+    `Update the Amazon listing content at "${name}" (${human}): ${instr}`;
+
+  const attrs = amazon.contextual_attributes || {};
+  const contextual = Object.entries(attrs).filter(([, v]) => Array.isArray(v) && v.length);
+  const details = [
+    ...contextual.map(([name, values]) => ({ name: humanize(name), value: values.join(', ') })),
+    ...(amazon.other_attributes || []),
+  ];
+
+  return (
+    <>
+    <SiteFrame host="www.amazon.com" path="/dp/B0XXXXXXXX">
+      {/* Amazon's own navigation. It carries no data of ours — it exists so the
+          page reads as Amazon at a glance, which is the entire brief. */}
+      <div style={{ background: '#131921' }} className="px-4 py-2.5 flex items-center gap-4">
+        <span className="text-white font-bold text-[18px] tracking-tight lowercase">amazon</span>
+        <div className="flex-1 h-[30px] rounded bg-white/95 flex items-center px-2.5">
+          <span className="text-[12px] text-[#565959]">Search Amazon</span>
+        </div>
+        <span className="text-white text-[11px] hidden sm:inline">Returns &amp; Orders</span>
+        <span className="text-white text-[11px]">Cart</span>
+      </div>
+      <div style={{ background: '#232F3E' }} className="px-4 py-1.5 text-white text-[11.5px]">
+        All · Today's Deals · Customer Service · Registry
+      </div>
+
+      <div style={AMZ_FONT} className="bg-white">
+        <div className="px-4 pt-2.5 text-[12px]" style={{ color: '#565959' }}>
+          Back to results
+        </div>
+
+        {/* THREE columns only when there is genuinely room for three.
+            Tailwind's breakpoints measure the VIEWPORT, and this canvas is a pane
+            beside a resizable chat, so `lg:` fired on a wide screen while the pane
+            itself was ~700px — which squeezed the centre column to about five words
+            a line and left the gallery column with a tall dead gap beside it.
+            `2xl:` is the first breakpoint where the pane is reliably wide enough for
+            Amazon's real three-column layout; below it the buy box spans underneath,
+            which is what Amazon's own responsive layout does. */}
+        <div className="px-4 pb-6 grid grid-cols-1 xl:grid-cols-[minmax(0,300px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)_minmax(0,236px)] gap-x-6">
+          {/* IMAGES — sticky and top-aligned so a long centre column does not leave
+              a screen of white beside a square photograph. */}
+          <div className="min-w-0 pt-3 xl:sticky xl:top-3 self-start">
+            <PreviewGallery group={gallery} variant="amazon" onUpdate={onUpdate} busy={busy} />
+          </div>
+
+          {/* CENTRE COLUMN. Capped measure: with the gallery no longer eating 44%
+              this column can get very wide on a large pane, and a 14px bullet run
+              across 900px is as hard to read as one across 200px. */}
+          <div className="min-w-0 pt-3 max-w-[680px]">
+            <h1
+              className="text-[24px] leading-[32px] font-normal break-words"
+              style={{ color: '#0F1111' }}
+            >
+              {amazon.title || <span style={{ color: '#8C8C8C' }}>No title written yet</span>}
+            </h1>
+            <div className="mt-1">
+              <span className="text-[14px]" style={{ color: '#007185' }}>
+                Visit the Store
+              </span>
+            </div>
+
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <Stars />
+              <span className="text-[14px]" style={{ color: '#007185' }}>
+                Ratings shown by Amazon
+              </span>
+            </div>
+            <div className="mt-1.5">
+              <SubtleEdit
+                label="title"
+                placeholder="e.g. lead with the category noun, work the material in, drop the brand repetition…"
+                onUpdate={onUpdate}
+                busy={busy}
+                compose={editField('title', 'the listing title')}
+              />
+            </div>
+
+            <Rule />
+
+            <div className="text-[14px]" style={{ color: '#565959' }}>
+              Price and delivery are set in Seller Central — not part of what is written here.
+            </div>
+
+            {!isBlank(amazon.item_highlights) && (
+              <>
+                <Rule />
+                <div
+                  className="text-[14px] leading-[20px] whitespace-pre-wrap break-words"
+                  style={{ color: '#0F1111' }}
+                >
+                  {amazon.item_highlights}
+                </div>
+                <div className="mt-2">
+                  <SubtleEdit
+                    label="highlights"
+                    placeholder="e.g. name the material, add the use case the title can't hold…"
+                    onUpdate={onUpdate}
+                    busy={busy}
+                    compose={editField('item_highlights', 'the item highlights')}
+                  />
+                </div>
+              </>
+            )}
+
+            {!!amazon.bullet_points?.length && (
+              <>
+                <Rule />
+                <div className="text-[16px] font-bold" style={{ color: '#0F1111' }}>
+                  About this item
+                </div>
+                <ul className="mt-2 pl-[18px] space-y-2" style={{ listStyle: 'disc' }}>
+                  {amazon.bullet_points.map((b, i) => (
+                    <li
+                      key={i}
+                      className="text-[14px] leading-[20px] break-words"
+                      style={{ color: '#0F1111' }}
+                    >
+                      {b}
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-2.5">
+                  <SubtleEdit
+                    label="bullets"
+                    placeholder="e.g. lead each one with the benefit, move the compatibility bullet up…"
+                    onUpdate={onUpdate}
+                    busy={busy}
+                    compose={editField('bullet_points', 'the five feature bullets')}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* BUY BOX — every value in it is Amazon's, so every one is inert.
+              Spans both columns until there is room for a third, so it never
+              squeezes the centre column to hold a 236px rail. */}
+          <div className="min-w-0 pt-3 xl:col-span-2 xl:max-w-[420px] 2xl:col-span-1 2xl:max-w-none 2xl:sticky 2xl:top-3 self-start">
+            <div
+              className="rounded-[8px] p-[14px]"
+              style={{ border: '1px solid #D5D9D9', background: '#FFFFFF' }}
+            >
+              <div className="text-[28px] leading-[32px]" style={{ color: '#0F1111' }}>
+                <span className="text-[13px] align-super">$</span>
+                <span style={{ color: '#8C8C8C' }}>––</span>
+                <span className="text-[13px] align-super">00</span>
+              </div>
+              <div className="mt-1 text-[12px]" style={{ color: '#565959' }}>
+                Price comes from Seller Central
+              </div>
+              <div className="mt-3 text-[14px]" style={{ color: '#565959' }}>
+                FREE delivery shown by Amazon
+              </div>
+              <div className="mt-2 text-[18px]" style={{ color: '#007600' }}>
+                In Stock
+              </div>
+              <button
+                type="button"
+                disabled
+                className="mt-3 w-full text-[13px] py-[7px] cursor-not-allowed"
+                style={{
+                  background: '#FFD814',
+                  border: '1px solid #FCD200',
+                  borderRadius: '100px',
+                  color: '#0F1111',
+                }}
+              >
+                Add to Cart
+              </button>
+              <button
+                type="button"
+                disabled
+                className="mt-2 w-full text-[13px] py-[7px] cursor-not-allowed"
+                style={{
+                  background: '#FFA41C',
+                  border: '1px solid #FF8F00',
+                  borderRadius: '100px',
+                  color: '#0F1111',
+                }}
+              >
+                Buy Now
+              </button>
+              <div className="mt-3 text-[12px] leading-[16px]" style={{ color: '#565959' }}>
+                Ships from and sold by Amazon.com
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* BELOW THE FOLD */}
+        <div className="px-4 pb-8">
+          {!!amazon.a_plus_modules?.length && (
+            <section style={{ borderTop: '1px solid #E7E7E7' }} className="pt-6">
+              <h2 className="text-[21px] font-bold" style={{ color: '#0F1111' }}>
+                From the brand
+              </h2>
+              <div className="mt-4 space-y-7">
+                {amazon.a_plus_modules.map((m, i) => (
+                  <div key={i}>
+                    <div className="text-[19px] font-bold" style={{ color: '#0F1111' }}>
+                      {m.heading}
+                    </div>
+                    <div
+                      className="mt-1.5 text-[14px] leading-[21px] whitespace-pre-wrap break-words"
+                      style={{ color: '#0F1111' }}
+                    >
+                      {m.body}
+                    </div>
+                    {/* The module TYPE decides its picture layout, and nothing
+                        records which pictures belong to which module — the last
+                        content→image reference was removed on purpose. So the type
+                        is stated and the founder pairs them up from the bands
+                        below, which is the documented cost of that decision. */}
+                    {!isBlank(m.module_type) && (
+                      <div className="mt-1 text-[12px] uppercase tracking-wide" style={{ color: '#565959' }}>
+                        {m.module_type}
+                      </div>
+                    )}
+                    <div className="mt-2">
+                      <SubtleEdit
+                        label="module"
+                        placeholder="e.g. shorter heading, lead with the problem, cut the last sentence…"
+                        onUpdate={onUpdate}
+                        busy={busy}
+                        compose={(instr) =>
+                          `Update A+ module ${i + 1}${m.heading ? ` ("${m.heading}")` : ''} in the Amazon listing content, at path ["a_plus_modules", "${i}"]: ${instr}`
+                        }
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4">
+                <SubtleEdit
+                  label="the A+ set"
+                  placeholder="e.g. add a comparison module, drop the last one, reorder so the how-to comes first…"
+                  onUpdate={onUpdate}
+                  busy={busy}
+                  compose={editField('a_plus_modules', 'the A+ content modules')}
+                />
+              </div>
+            </section>
+          )}
+
+          {rest.map((group) => (
+            <PreviewImageBand
+              key={group.category}
+              group={group}
+              variant="amazon"
+              onUpdate={onUpdate}
+              busy={busy}
+            />
+          ))}
+
+          {!isBlank(amazon.product_description) && (
+            <section style={{ borderTop: '1px solid #E7E7E7' }} className="mt-8 pt-6">
+              <h2 className="text-[21px] font-bold" style={{ color: '#0F1111' }}>
+                Product description
+              </h2>
+              <div
+                className="mt-3 text-[14px] leading-[21px] whitespace-pre-wrap break-words"
+                style={{ color: '#0F1111' }}
+              >
+                {amazon.product_description}
+              </div>
+              <div className="mt-2.5">
+                <SubtleEdit
+                  label="description"
+                  placeholder="e.g. it has to stand alone in case A+ suppresses it — make the opening carry the argument…"
+                  onUpdate={onUpdate}
+                  busy={busy}
+                  compose={editField('product_description', 'the product description')}
+                />
+              </div>
+            </section>
+          )}
+
+          {!!details.length && (
+            <section style={{ borderTop: '1px solid #E7E7E7' }} className="mt-8 pt-6">
+              <h2 className="text-[21px] font-bold" style={{ color: '#0F1111' }}>
+                Product information
+              </h2>
+              <AmazonDetailsTable details={details} />
+              <div className="mt-2.5">
+                <SubtleEdit
+                  label="details"
+                  placeholder="e.g. fill in what it's compatible with, add the age range, name the material properly…"
+                  onUpdate={onUpdate}
+                  busy={busy}
+                  compose={(instr) =>
+                    `Update the Amazon listing's attributes — "contextual_attributes" and "other_attributes": ${instr}`
+                  }
+                />
+              </div>
+            </section>
+          )}
+        </div>
+      </div>
+    </SiteFrame>
+
+      {/* OUTSIDE the browser frame on purpose: this is our note ABOUT the page, not
+          part of it, and the fields in it never render on Amazon at all. */}
+      {(!isBlank(amazon.backend_search_terms) || !isBlank(amazon.a_plus_tier_note)) && (
+        <SellerOnly>
+          {!isBlank(amazon.backend_search_terms) && (
+            <>
+              <CopyField label="Backend search terms" value={amazon.backend_search_terms} mono />
+              <div className="mt-1.5">
+                <UpdateBox
+                  label="search terms"
+                  placeholder="e.g. drop anything the title already says, add the misspellings buyers use…"
+                  onUpdate={onUpdate}
+                  busy={busy}
+                  compose={editField('backend_search_terms', 'the backend search terms')}
+                />
+              </div>
+            </>
+          )}
+          {!isBlank(amazon.a_plus_tier_note) && (
+            <p className="mt-2 text-[11.5px] italic text-navy-600 dark:text-slate-400 leading-relaxed">
+              {amazon.a_plus_tier_note}
+            </p>
+          )}
+        </SellerOnly>
+      )}
+    </>
+  );
+}
+
+// Blocks that belong ABOVE THE FOLD, beside the gallery, rather than as a section
+// further down. The roster is the content prompt's own above-the-fold list, so it
+// is what the model was actually told to write — not a guess.
+//
+// **Matched by `field`, and an unmatched block simply becomes a section.** That is
+// the safe direction to be wrong in: a block that should have been in the buy
+// column merely appears lower, while a matcher that over-reached would take a real
+// section OUT of the page body.
+const HERO_FIELDS = new Set([
+  'title', 'product_title',
+  'value_proposition', 'value_prop',
+  'price', 'pricing', 'price_presentation',
+  'variants', 'variant_choice', 'variant_selection',
+  'cta', 'call_to_action', 'primary_call_to_action',
+  'rating', 'rating_summary',
+  'reassurance', 'reassurance_strip',
+]);
+// The markup layer. A page carries it, a shopper never sees it, so it is lifted
+// out of the body — the same treatment Amazon's backend search terms get.
+const SELLER_ONLY_FIELDS = new Set(['metadata', 'meta', 'seo_metadata', 'structured_data']);
+
+const heroBlock = (blocks, ...names) =>
+  blocks.find((b) => names.includes(b.field)) || null;
+
+// The storefront's spec rows — the other genuinely unbounded list, collapsed past
+// twelve for the same reason Amazon's attribute table is: a `pairs` block is
+// whatever the model composed, and nothing caps it.
+function StoreSpecRows({ pairs }) {
+  const [open, setOpen] = useState(false);
+  const LIMIT = 12;
+  const all = pairs || [];
+  const rows = open ? all : all.slice(0, LIMIT);
+  return (
+    <>
+      <dl className="mt-4 max-w-[74ch]">
+        {rows.map((p, i) => (
+          <div
+            key={`${p.name}-${i}`}
+            className="grid grid-cols-[minmax(0,34%)_1fr] gap-4 py-3"
+            style={{ borderTop: i === 0 ? 'none' : `1px solid ${STORE_RULE}` }}
+          >
+            <dt className="text-[13px] uppercase tracking-[0.06em]" style={{ color: STORE_MUTED }}>
+              {p.name}
+            </dt>
+            <dd className="text-[15px] leading-[1.6] break-words" style={{ color: STORE_INK }}>
+              {p.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {all.length > LIMIT && (
+        <MoreToggle
+          open={open}
+          onToggle={() => setOpen((v) => !v)}
+          hidden={all.length - LIMIT}
+          label="See all specifications"
+          tone="store"
+        />
+      )}
+    </>
+  );
+}
+
+// A block rendered as a real page SECTION on the storefront preview: the heading is
+// a heading, prose is prose, a list is a feature list, and pairs become a spec
+// table or a Q&A depending on nothing but their own shape. Recurses on 'dict'
+// exactly as `ContentBlock` does, because 'dict' is still the only kind that nests
+// and the depth is still the model's to choose.
+//
+// Styled in the storefront's own palette (STORE_INK / STORE_MUTED / STORE_RULE)
+// rather than the app's, for the same reason the Amazon preview is: this is a
+// simulation of somebody else's page.
+function PageSection({ block, depth = 0, onUpdate, busy, compose }) {
+  if (!block) return null;
+  const heading = block.label || humanize(block.field);
+  const H = depth === 0 ? 'h2' : depth === 1 ? 'h3' : 'h4';
+
+  // A pairs block whose names read as questions is an FAQ, and an FAQ laid out as
+  // a spec table is unreadable. Detected from the CONTENT rather than the field
+  // name, because `field` is the model's to choose and a question mark is not.
+  const asQA =
+    block.kind === 'pairs' &&
+    (block.pairs || []).length > 0 &&
+    (block.pairs || []).filter((p) => /\?\s*$/.test(p.name || '')).length >=
+      Math.ceil((block.pairs || []).length / 2);
+
+  return (
+    <section className={depth === 0 ? 'mt-14 first:mt-0' : 'mt-7'}>
+      <H
+        className={
+          depth === 0
+            ? 'text-[24px] leading-tight font-semibold tracking-[-0.01em]'
+            : depth === 1
+              ? 'text-[16px] font-semibold'
+              : 'text-[14px] font-semibold'
+        }
+        style={{ color: STORE_INK }}
+      >
+        {heading}
+      </H>
+      {depth === 0 && (
+        <div className="mt-3 h-px w-10" style={{ background: STORE_INK, opacity: 0.35 }} />
+      )}
+
+      {block.kind === 'str' && !isBlank(block.text) && (
+        <div className="mt-4 text-[15px] leading-[1.75] max-w-[68ch]" style={{ color: STORE_BODY }}>
+          <Markdown text={block.text} plain />
+        </div>
+      )}
+
+      {block.kind === 'list' && !!block.items?.length && (
+        <ul className="mt-4 grid gap-2.5 sm:grid-cols-2 max-w-[74ch]">
+          {block.items.map((item, i) => (
+            <li key={i} className="flex items-start gap-2.5 text-[15px] leading-[1.6] break-words" style={{ color: STORE_BODY }}>
+              <span
+                className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{ background: STORE_ACCENT }}
+              />
+              {item}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {block.kind === 'pairs' && !asQA && <StoreSpecRows pairs={block.pairs} />}
+
+      {block.kind === 'pairs' && asQA && (
+        <div className="mt-4 max-w-[74ch]">
+          {(block.pairs || []).map((p, i) => (
+            <details
+              key={`${p.name}-${i}`}
+              className="group py-4"
+              style={{ borderTop: i === 0 ? 'none' : `1px solid ${STORE_RULE}` }}
+            >
+              <summary
+                className="cursor-pointer list-none flex items-start justify-between gap-4 text-[15px] font-medium"
+                style={{ color: STORE_INK }}
+              >
+                {p.name}
+                <span
+                  className="mt-0.5 shrink-0 text-[18px] leading-none transition-transform group-open:rotate-45"
+                  style={{ color: STORE_MUTED }}
+                >
+                  +
+                </span>
+              </summary>
+              <div className="mt-2.5 text-[15px] leading-[1.7] break-words" style={{ color: STORE_BODY }}>
+                {p.value}
+              </div>
+            </details>
+          ))}
+        </div>
+      )}
+
+      {block.kind === 'dict' &&
+        (block.blocks || []).map((child, i) => (
+          <PageSection key={`${child.field}-${i}`} block={child} depth={depth + 1} />
+        ))}
+
+      {/* Only the TOP-LEVEL section carries an update box. A child block is
+          reachable by naming it in the instruction, and a box per nested block
+          would put one on every row of a size chart. */}
+      {depth === 0 && compose && (
+        <div className="mt-4">
+          <SubtleEdit
+            label={`“${heading}”`}
+            placeholder="e.g. shorter, answer the returns question here, add the size a buyer asks about…"
+            onUpdate={onUpdate}
+            busy={busy}
+            compose={compose}
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+// EVERY OTHER STOREFRONT — a premium direct-to-consumer product page, and styled
+// like one rather than like our app: a warm off-white ground, near-black ink, one
+// restrained accent, generous type and a lot of air.
+//
+// **The same reasoning as the Amazon preview, in the other direction.** There, the
+// destination has a look and copying it exactly is the brief. Here there is no
+// single destination, so the target is what a good storefront PDP looks like in
+// general — big sticky imagery, a quiet buy column, sections that breathe. It is
+// deliberately NOT the app's navy/mint: a founder is judging their page, and a
+// page wearing our chrome is hard to judge as theirs.
+//
+// Light-only in both themes, for the reason `SiteFrame` exists.
+//
+// `blocks` IS the page order — there is no second ordering to disagree with it —
+// so this renders them in sequence and pulls out only two kinds: the handful that
+// belong beside the gallery, and the metadata layer, which no shopper sees.
+function StorefrontPagePreview({ generic, groups, onUpdate, busy }) {
+  const { gallery, rest } = pickGallery(groups);
+  const blocks = generic.blocks || [];
+  // A generic path is OPEN — validated only by resolution — so the `field` handle
+  // is what the Studio needs to find the block. It is stable across turns by
+  // design, which is exactly why it is the thing to quote.
+  const editBlock = (block) => (instr) =>
+    `Update the "${block.field}" block${block.label ? ` (${block.label})` : ''} on the product page content: ${instr}`;
+
+  const titleBlock = heroBlock(blocks, 'title', 'product_title');
+  const valueBlock = heroBlock(blocks, 'value_proposition', 'value_prop');
+  const priceBlock = heroBlock(blocks, 'price', 'pricing', 'price_presentation');
+  const variantBlock = heroBlock(blocks, 'variants', 'variant_choice', 'variant_selection');
+  const ctaBlock = heroBlock(blocks, 'cta', 'call_to_action', 'primary_call_to_action');
+  const reassuranceBlock = heroBlock(blocks, 'reassurance', 'reassurance_strip');
+
+  const sections = blocks.filter(
+    (b) => !HERO_FIELDS.has(b.field) && !SELLER_ONLY_FIELDS.has(b.field),
+  );
+  const sellerOnly = blocks.filter((b) => SELLER_ONLY_FIELDS.has(b.field));
+
+  const ctaLabel =
+    (ctaBlock?.kind === 'str' && ctaBlock.text) || (ctaBlock?.items || [])[0] || 'Add to cart';
+
+  return (
+    <>
+    <SiteFrame host="your-store.com" path="/products/…">
+      <div style={{ ...STORE_FONT, background: STORE_BG }}>
+        {/* The storefront's own header — a wordmark and a thin nav, enough to read
+            as a shop rather than as a panel in our app. */}
+        <div
+          className="px-7 py-4 flex items-center justify-between"
+          style={{ borderBottom: `1px solid ${STORE_RULE}` }}
+        >
+          <span
+            className="text-[15px] font-semibold tracking-[0.14em] uppercase"
+            style={{ color: STORE_INK }}
+          >
+            Your Brand
+          </span>
+          <div className="hidden sm:flex items-center gap-6 text-[13px]" style={{ color: STORE_MUTED }}>
+            <span>Shop</span>
+            <span>About</span>
+            <span>Journal</span>
+            <span>Cart (0)</span>
+          </div>
+        </div>
+
+        {/* ABOVE THE FOLD */}
+        {/* Same reasoning as the Amazon grid: `lg:` measures the viewport, not this
+            pane. `xl:` is where a two-column storefront hero stops cramping, and the
+            buy column is capped so its copy keeps a readable measure instead of
+            stretching across a wide pane. */}
+        <div className="px-7 py-9 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,380px)] gap-8 xl:gap-12">
+          <div className="min-w-0 xl:sticky xl:top-4 self-start">
+            <PreviewGallery group={gallery} variant="store" onUpdate={onUpdate} busy={busy} />
+          </div>
+
+          <div className="min-w-0 xl:pt-3 max-w-[560px]">
+            <div
+              className="text-[11.5px] uppercase tracking-[0.16em]"
+              style={{ color: STORE_MUTED }}
+            >
+              Product
+            </div>
+            <h1
+              className="mt-2.5 text-[36px] leading-[1.1] font-semibold tracking-[-0.02em] break-words"
+              style={{ color: STORE_INK }}
+            >
+              {(titleBlock?.kind === 'str' && titleBlock.text) ||
+                titleBlock?.label || (
+                  <span style={{ color: STORE_MUTED }}>No title written yet</span>
+                )}
+            </h1>
+
+            {valueBlock && (
+              <p
+                className="mt-4 text-[17px] leading-[1.6] break-words max-w-[46ch]"
+                style={{ color: STORE_BODY }}
+              >
+                {valueBlock.kind === 'str' ? valueBlock.text : (valueBlock.items || []).join(' · ')}
+              </p>
+            )}
+
+            <div className="mt-7 pt-6" style={{ borderTop: `1px solid ${STORE_RULE}` }}>
+              {priceBlock?.kind === 'str' && !isBlank(priceBlock.text) ? (
+                <div className="text-[15px] leading-[1.6]" style={{ color: STORE_INK }}>
+                  {priceBlock.text}
+                </div>
+              ) : (
+                <div className="flex items-baseline gap-3">
+                  <span className="text-[30px] font-semibold" style={{ color: STORE_MUTED }}>
+                    $––
+                  </span>
+                  <span className="text-[12.5px]" style={{ color: STORE_MUTED }}>
+                    price comes from your store
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {variantBlock && (
+              <div className="mt-7">
+                <div
+                  className="text-[11.5px] uppercase tracking-[0.14em]"
+                  style={{ color: STORE_MUTED }}
+                >
+                  {variantBlock.label || 'Options'}
+                </div>
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  {/* All three shapes a variant block can arrive in. Without the
+                      'str' case a written-out sentence renders as an empty row
+                      under a heading, which reads as a bug rather than as copy. */}
+                  {(variantBlock.kind === 'list'
+                    ? variantBlock.items
+                    : variantBlock.kind === 'pairs'
+                      ? (variantBlock.pairs || []).map((p) => `${p.name}: ${p.value}`)
+                      : [variantBlock.text].filter((s) => !isBlank(s))
+                  ).map((v, i) => (
+                    <span
+                      key={i}
+                      className="rounded-full px-4 py-2 text-[13.5px]"
+                      style={{
+                        border: `1px solid ${i === 0 ? STORE_INK : STORE_RULE}`,
+                        color: STORE_INK,
+                        background: i === 0 ? '#FFFFFF' : 'transparent',
+                      }}
+                    >
+                      {v}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <button
+              type="button"
+              disabled
+              className="mt-7 w-full rounded-full text-[14.5px] font-medium py-4 cursor-not-allowed tracking-wide"
+              style={{ background: STORE_INK, color: '#FFFFFF' }}
+            >
+              {ctaLabel}
+            </button>
+
+            {reassuranceBlock && (
+              <ul className="mt-5 grid gap-2.5">
+                {(reassuranceBlock.kind === 'list'
+                  ? reassuranceBlock.items
+                  : [reassuranceBlock.text].filter(Boolean)
+                ).map((r, i) => (
+                  <li
+                    key={i}
+                    className="flex items-center gap-2.5 text-[13.5px]"
+                    style={{ color: STORE_BODY }}
+                  >
+                    <IconCheck width={13} height={13} style={{ color: STORE_ACCENT }} />
+                    {r}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {/* ONE box for the whole buy column. Its blocks are short and read as a
+                single unit — a founder revising the value proposition is usually
+                revising the title with it — and five separate boxes here would
+                crowd the one part of the page that has to stay scannable. */}
+            <div className="mt-7">
+              <SubtleEdit
+                label="the top of the page"
+                placeholder="e.g. sharper value proposition, name the size in the title, stronger button wording…"
+                onUpdate={onUpdate}
+                busy={busy}
+                compose={(instr) =>
+                  'Update the above-the-fold blocks on the product page content — ' +
+                  [titleBlock, valueBlock, priceBlock, variantBlock, ctaBlock, reassuranceBlock]
+                    .filter(Boolean)
+                    .map((b) => `"${b.field}"`)
+                    .join(', ') +
+                  `: ${instr}`
+                }
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* BELOW THE FOLD */}
+        <div className="px-7 pb-14 max-w-[900px]">
+          {sections.map((block, i) => (
+            <PageSection
+              key={`${block.field}-${i}`}
+              block={block}
+              onUpdate={onUpdate}
+              busy={busy}
+              compose={editBlock(block)}
+            />
+          ))}
+
+          {rest.map((group) => (
+            <PreviewImageBand
+              key={group.category}
+              group={group}
+              variant="store"
+              onUpdate={onUpdate}
+              busy={busy}
+            />
+          ))}
+        </div>
+      </div>
+    </SiteFrame>
+
+      {/* OUTSIDE the browser frame, like Amazon's seller-only fields: the metadata
+          layer is markup the page carries and a shopper never sees. */}
+      {!!sellerOnly.length && (
+        <SellerOnly>
+          {sellerOnly.map((block, i) => (
+            <ContentBlock key={`${block.field}-${i}`} block={block} />
+          ))}
+        </SellerOnly>
+      )}
+    </>
+  );
+}
+
+function StudioView({ content, imageSets, note, onUpdate, busy }) {
   const page = content?.amazon || content?.generic || null;
   // Grouped by category, because one category legitimately spans several sets —
   // a gallery whose photographs are not all the same shape is one gallery across
@@ -2014,11 +3550,16 @@ function StudioView({ content, imageSets, researching }) {
     (n, s) => n + (s.slots?.length || 0),
     0,
   );
+  const [mode, setMode] = useState('page'); // 'page' | 'fields'
+  // Only read on the pictures-but-no-copy path, but computed here so the two
+  // halves of it can never disagree about which group is the gallery.
+  const picturesOnly = pickGallery(groups);
 
   if (!page && !pictureCount) {
     return (
       <CanvasEmpty
-        busy={researching}
+        busy={Boolean(note)}
+        note={note}
         busyTitle="Building your page…"
         busyBody="It writes the words first, then makes the pictures. Images take a few minutes."
         idleTitle="Nothing built yet"
@@ -2028,17 +3569,68 @@ function StudioView({ content, imageSets, researching }) {
   }
 
   return (
-    <div className="p-6 max-w-[1024px] mx-auto flex flex-col gap-4">
-      {page && (
+    <div className="p-6 max-w-[1100px] mx-auto flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <p className="text-[12.5px] text-navy-600 dark:text-slate-400 leading-relaxed max-w-[640px]">
+          {content?.amazon
+            ? 'Amazon fixes which fields exist, so this fills them — shown as the listing a shopper would see. Switch to Fields to copy each one into Seller Central.'
+            : 'Your storefront lets you choose the sections, so this proposes them in order — shown as the page they build. Switch to Fields to copy them out.'}
+        </p>
+        <div className="flex rounded-lg border border-navy-100 dark:border-slate-600 overflow-hidden shrink-0">
+          {[
+            { key: 'page', label: 'Page' },
+            { key: 'fields', label: 'Fields' },
+          ].map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setMode(t.key)}
+              className={[
+                'px-3 py-1.5 text-[12.5px] font-medium transition',
+                mode === t.key
+                  ? 'bg-meta-600 text-white'
+                  : 'bg-white dark:bg-slate-800 text-navy-700 dark:text-slate-200 hover:bg-mist dark:hover:bg-slate-700',
+              ].join(' ')}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* THE PAGE. Content and pictures together, because that is what a page is —
+          the two artifacts are independent on the backend, and this view is the one
+          place a founder gets to see them as the single thing they publish. */}
+      {mode === 'page' &&
+        (content?.amazon ? (
+          <AmazonPagePreview amazon={content.amazon} groups={groups} onUpdate={onUpdate} busy={busy} />
+        ) : content?.generic ? (
+          <StorefrontPagePreview generic={content.generic} groups={groups} onUpdate={onUpdate} busy={busy} />
+        ) : (
+          /* Pictures with no words yet — a real state, since the two artifacts land
+             independently. Show the gallery rather than an empty page. */
+          <div className="rounded-2xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-card p-5">
+            <div className="font-display text-[15px] font-semibold text-navy-900 dark:text-slate-100">
+              Pictures so far
+            </div>
+            <p className="mt-1 text-[12.5px] text-navy-600 dark:text-slate-400">
+              No copy has been written yet, so there is no page to lay out. Ask for the words in
+              the chat.
+            </p>
+            <div className="mt-4 max-w-[420px]">
+              <PreviewGallery group={picturesOnly.gallery} onUpdate={onUpdate} busy={busy} />
+            </div>
+            {picturesOnly.rest.map((group) => (
+              <PreviewImageBand key={group.category} group={group} onUpdate={onUpdate} busy={busy} />
+            ))}
+          </div>
+        ))}
+
+      {mode === 'fields' && page && (
         <div className="rounded-2xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-card p-5">
           <div className="font-display text-[17px] font-semibold text-navy-900 dark:text-slate-100">
             Your page, written
           </div>
-          <p className="mt-1 text-[12.5px] text-navy-600 dark:text-slate-400 leading-relaxed">
-            {content?.amazon
-              ? 'Amazon fixes which fields exist, so this fills them. Copy each one straight into Seller Central.'
-              : 'Your storefront lets you choose the sections, so this proposes them in order — the first block is the top of the page.'}
-          </p>
           <div className="mt-3">
             {content?.amazon ? (
               <AmazonContent amazon={content.amazon} />
@@ -2051,7 +3643,7 @@ function StudioView({ content, imageSets, researching }) {
         </div>
       )}
 
-      {!!pictureCount && (
+      {mode === 'fields' && !!pictureCount && (
         <div className="rounded-2xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-card p-5">
           <div className="font-display text-[17px] font-semibold text-navy-900 dark:text-slate-100">
             Your pictures
@@ -2076,6 +3668,9 @@ function StudioView({ content, imageSets, researching }) {
                       key={`${set.set_key}-${slot.slot_key}`}
                       slot={slot}
                       ratio={set.aspect_ratio}
+                      setKey={set.set_key}
+                      onUpdate={onUpdate}
+                      busy={busy}
                     />
                   ))}
                 </div>
@@ -2099,19 +3694,22 @@ function StudioView({ content, imageSets, researching }) {
 // `areas` is the set of areas that have announced themselves — content-free
 // progress webhooks — used only to say how far along a run is while the page is
 // still being composed.
-function AuditView({ audit, areas, researching }) {
+function AuditView({ audit, areas, note }) {
   const html = audit?.html;
 
   if (!html) {
     const seen = areas?.size || 0;
     return (
       <CanvasEmpty
-        busy={researching}
+        busy={Boolean(note)}
+        note={note}
         busyTitle="Auditing your page…"
-        busyBody={
-          seen
-            ? `${seen} of ${AUDIT_AREAS.length} areas are in. They finish at very different times, and the report is composed once they land.`
-            : 'Each area lands on its own — they finish at very different times, and the report is composed once they land.'
+        busyBody="Each area lands on its own — they finish at very different times, and the report is composed once they land."
+        // The one thing only this tab knows. It stays a separate line from `note`
+        // so the live webhook line ("SEO is ready") and the count sit side by side
+        // instead of one overwriting the other.
+        progress={
+          seen ? `${seen} of ${AUDIT_AREAS.length} areas are in.` : null
         }
         idleTitle="Nothing audited yet"
         idleBody="Ask for the audit in the chat. You can ask for the whole thing, or for one area on its own."
@@ -2226,10 +3824,21 @@ function AuditView({ audit, areas, researching }) {
 //
 // The `prose` classes are the same ones `MilestoneViewer` uses, so a document
 // looks the same wherever the app shows one.
-function Markdown({ text }) {
+// `plain` drops the app's colour and size so the CALLER's cascade wins. It exists
+// for the simulated pages: those are light-only by design, and `dark:text-slate-200`
+// would paint their body copy light-on-warm-white the moment the app is in dark
+// mode. (`prose`/`dark:prose-invert` are inert here — @tailwindcss/typography is not
+// installed — so the colour class was the whole of the problem.)
+function Markdown({ text, plain = false }) {
   if (!text) return null;
   return (
-    <div className="prose prose-sm dark:prose-invert max-w-none text-[13px] leading-relaxed text-navy-800 dark:text-slate-200">
+    <div
+      className={
+        plain
+          ? 'max-w-none'
+          : 'prose prose-sm dark:prose-invert max-w-none text-[13px] leading-relaxed text-navy-800 dark:text-slate-200'
+      }
+    >
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
     </div>
   );
