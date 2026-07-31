@@ -2117,22 +2117,21 @@ const STORE_ACCENT = '#1F6F5C';
 // founder the rectangle is a SIMULATION of their live page rather than another
 // panel of this tool, which is what lets the contents abandon the app's styling
 // entirely without looking broken.
-function SiteFrame({ host, path, children }) {
+// NO fake URL bar any more — it read as a search box, and the simulated sites'
+// own nav and search went with it. None of that chrome is anything the Studio
+// writes, so it was surface a founder could look at but never act on. What is left
+// is the minimum that still says "this is your page, not a panel of this tool",
+// which is what licenses the contents to abandon the app's styling.
+function SiteFrame({ label, children }) {
   return (
     <div className="rounded-2xl overflow-hidden border border-navy-100 dark:border-slate-700 shadow-card bg-white">
-      <div className="flex items-center gap-2 px-3 py-2 bg-navy-50 dark:bg-slate-800 border-b border-navy-100 dark:border-slate-700">
+      <div className="flex items-center gap-2 px-3.5 py-2 bg-navy-50 dark:bg-slate-800 border-b border-navy-100 dark:border-slate-700">
         <span className="flex gap-1.5">
           <span className="h-2.5 w-2.5 rounded-full bg-[#FF5F57]" />
           <span className="h-2.5 w-2.5 rounded-full bg-[#FEBC2E]" />
           <span className="h-2.5 w-2.5 rounded-full bg-[#28C840]" />
         </span>
-        <span className="flex-1 mx-2 rounded-md bg-white dark:bg-slate-900 px-2.5 py-1 text-[11px] text-navy-500 dark:text-slate-400 truncate">
-          {host}
-          <span className="text-navy-400 dark:text-slate-500">{path}</span>
-        </span>
-        <span className="text-[10px] uppercase tracking-wide text-navy-400 dark:text-slate-500">
-          Preview
-        </span>
+        <span className="ml-1 text-[11px] text-navy-500 dark:text-slate-400 truncate">{label}</span>
       </div>
       {children}
     </div>
@@ -2141,38 +2140,44 @@ function SiteFrame({ host, path, children }) {
 
 // Amazon's star row. Inert — the Studio writes no rating and `state.listing` never
 // reaches this screen, so these are the shape of the thing and never a number.
-function Stars() {
-  return (
-    <span className="inline-flex items-center gap-[1px]" aria-hidden="true">
-      {[0, 1, 2, 3, 4].map((i) => (
-        <svg key={i} width="15" height="15" viewBox="0 0 24 24" fill="#FFA41C">
-          <path d="M12 17.3 5.8 21l1.6-7L2 9.2l7.1-.6L12 2l2.9 6.6 7.1.6-5.4 4.8 1.6 7z" />
-        </svg>
-      ))}
-    </span>
-  );
-}
+// RETIRED with Amazon's nav and buy box — the star row lived in the buy column,
+// and there was never a rating to put in it (the Studio writes none).
+// function Stars() {
+//   return (
+//     <span className="inline-flex items-center gap-[1px]" aria-hidden="true">
+//       {[0, 1, 2, 3, 4].map((i) => (
+//         <svg key={i} width="15" height="15" viewBox="0 0 24 24" fill="#FFA41C">
+//           <path d="M12 17.3 5.8 21l1.6-7L2 9.2l7.1-.6L12 2l2.9 6.6 7.1.6-5.4 4.8 1.6 7z" />
+//         </svg>
+//       ))}
+//     </span>
+//   );
+// }
 
 // Amazon's hairline section rule.
-function Rule() {
-  return <hr className="my-3" style={{ border: 0, borderTop: '1px solid #E7E7E7' }} />;
-}
+// RETIRED — Amazon's hairline rule between buy-column sections. `FieldRow` draws
+// its own top border, so every field is separated without it.
+// function Rule() {
+//   return <hr className="my-3" style={{ border: 0, borderTop: '1px solid #E7E7E7' }} />;
+// }
 
 // The toggle under a collapsed section. Split out from the sections themselves
 // because a table cannot hold it — a <button> as a sibling of <tr> inside <tbody>
 // is invalid markup the browser hoists out of the table.
-function MoreToggle({ open, onToggle, hidden, label, tone = 'amazon' }) {
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      className="mt-3 text-[13px] font-medium"
-      style={{ color: tone === 'amazon' ? '#007185' : STORE_INK }}
-    >
-      {open ? 'Show less' : `${label} (${hidden} more)`}
-    </button>
-  );
-}
+// RETIRED with `AmazonDetailsTable` and `StoreSpecRows`, its only callers. Nothing
+// collapses any more — every populated field is shown in full, which is the point.
+// function MoreToggle({ open, onToggle, hidden, label, tone = 'amazon' }) {
+//   return (
+//     <button
+//       type="button"
+//       onClick={onToggle}
+//       className="mt-3 text-[13px] font-medium"
+//       style={{ color: tone === 'amazon' ? '#007185' : STORE_INK }}
+//     >
+//       {open ? 'Show less' : `${label} (${hidden} more)`}
+//     </button>
+//   );
+// }
 
 // Amazon's Product information table, collapsed past ten rows.
 //
@@ -2181,43 +2186,46 @@ function MoreToggle({ open, onToggle, hidden, label, tone = 'amazon' }) {
 // per product type, hundreds deep — so it can arrive with forty rows and turn the
 // section into a wall. The BOUNDED fields are deliberately left alone: five feature
 // bullets are five, and collapsing them would hide copy the founder is here to read.
-function AmazonDetailsTable({ details }) {
-  const [open, setOpen] = useState(false);
-  const LIMIT = 10;
-  const rows = open ? details : details.slice(0, LIMIT);
-  return (
-    <>
-      <table className="mt-3 w-full border-collapse">
-        <tbody>
-          {rows.map((p, i) => (
-            <tr key={`${p.name}-${i}`}>
-              <th
-                className="text-left align-top text-[14px] font-bold py-2 pr-4 w-[38%]"
-                style={{ background: '#F7F8F8', color: '#0F1111', borderBottom: '1px solid #FFFFFF' }}
-              >
-                <span className="px-2.5 inline-block">{p.name}</span>
-              </th>
-              <td
-                className="align-top text-[14px] py-2 px-2.5"
-                style={{ color: '#0F1111', borderBottom: '1px solid #E7E7E7' }}
-              >
-                {p.value}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {details.length > LIMIT && (
-        <MoreToggle
-          open={open}
-          onToggle={() => setOpen((v) => !v)}
-          hidden={details.length - LIMIT}
-          label="See more product details"
-        />
-      )}
-    </>
-  );
-}
+// RETIRED — Amazon's two-column detail table with its collapse. Attributes render
+// through `FieldPairs` under their own schema names (CONTEXTUAL ATTRIBUTES /
+// OTHER ATTRIBUTES) now, and completeness beat collapsing.
+// function AmazonDetailsTable({ details }) {
+//   const [open, setOpen] = useState(false);
+//   const LIMIT = 10;
+//   const rows = open ? details : details.slice(0, LIMIT);
+//   return (
+//     <>
+//       <table className="mt-3 w-full border-collapse">
+//         <tbody>
+//           {rows.map((p, i) => (
+//             <tr key={`${p.name}-${i}`}>
+//               <th
+//                 className="text-left align-top text-[14px] font-bold py-2 pr-4 w-[38%]"
+//                 style={{ background: '#F7F8F8', color: '#0F1111', borderBottom: '1px solid #FFFFFF' }}
+//               >
+//                 <span className="px-2.5 inline-block">{p.name}</span>
+//               </th>
+//               <td
+//                 className="align-top text-[14px] py-2 px-2.5"
+//                 style={{ color: '#0F1111', borderBottom: '1px solid #E7E7E7' }}
+//               >
+//                 {p.value}
+//               </td>
+//             </tr>
+//           ))}
+//         </tbody>
+//       </table>
+//       {details.length > LIMIT && (
+//         <MoreToggle
+//           open={open}
+//           onToggle={() => setOpen((v) => !v)}
+//           hidden={details.length - LIMIT}
+//           label="See more product details"
+//         />
+//       )}
+//     </>
+//   );
+// }
 
 // The edit affordance INSIDE a simulated page. Same behaviour as `UpdateBox` — it
 // is that component — but collapsed to a quiet pencil so the page still reads as
@@ -2316,7 +2324,11 @@ function UpdateBox({ label, placeholder, compose, onUpdate, busy, tone = 'defaul
 // explicitly, and it has to travel with the picture rather than sit in a legend:
 // a founder scanning a gallery is deciding which shots still need taking, and a
 // generated one they have not approved is the thing they most need to spot.
-function SourceBadge({ source, className = '' }) {
+// `version` rides alongside the source because the two answer different questions
+// and a founder needs both at a glance: whether this is their own photograph or one
+// the Studio made, and WHICH take of it they are looking at. A regenerated slot
+// looks identical to a first take without the number.
+function SourceBadge({ source, version, className = '' }) {
   const generated = source === 'generated';
   return (
     <span
@@ -2340,6 +2352,7 @@ function SourceBadge({ source, className = '' }) {
       }
     >
       {generated ? 'AI generated' : 'Existing'}
+      {version ? ` · v${version}` : ''}
     </span>
   );
 }
@@ -2366,14 +2379,17 @@ function groupPictures(group) {
 // group. Getting it wrong costs a founder seeing their benefit graphics in the
 // hero rail instead of their pack shots; it can never hide a picture, because
 // every other group is rendered below in full.
-const GALLERY_CATEGORY_RE = /gallery|main|hero|product\s*shot|primary/i;
+// const GALLERY_CATEGORY_RE = /gallery|main|hero|product\s*shot|primary/i;  (retired with pickGallery)
 
-function pickGallery(groups) {
-  if (!groups?.length) return { gallery: null, rest: [] };
-  const idx = groups.findIndex((g) => GALLERY_CATEGORY_RE.test(g.category));
-  const at = idx >= 0 ? idx : 0;
-  return { gallery: groups[at], rest: groups.filter((_, i) => i !== at) };
-}
+// RETIRED — it split categories into a hero group and the rest, back when pictures
+// rendered in two places. Every picture is in ONE gallery at the top now, so there
+// is no hero to pick.
+// function pickGallery(groups) {
+//   if (!groups?.length) return { gallery: null, rest: [] };
+//   const idx = groups.findIndex((g) => GALLERY_CATEGORY_RE.test(g.category));
+//   const at = idx >= 0 ? idx : 0;
+//   return { gallery: groups[at], rest: groups.filter((_, i) => i !== at) };
+// }
 
 // A picture's takes, oldest first, and which one is being previewed. Versions are
 // append-only on the backend and numbered from 1, so this sorts rather than
@@ -2453,113 +2469,157 @@ function VersionStrip({ takes, at, onPick }) {
   );
 }
 
-// The hero gallery: one large picture and a thumbnail rail, the arrangement every
-// storefront and every marketplace uses. Selection is local — it is a way of
-// looking at the pictures, not a decision about the page.
-// `variant` styles the frame to match whichever site is being simulated: Amazon's
-// square white stage with its orange selected-thumb ring (#E77600 with the glow it
-// actually uses), or the storefront's tall soft-cornered stage on the warm ground.
-// It changes chrome only — never which pictures are shown or in what order.
-function PreviewGallery({ group, onUpdate, busy, variant = 'amazon' }) {
+// EVERY picture on the thread, flattened in category order then set order then
+// slot order — ONE gallery at the TOP of the page and nothing below.
+//
+// It used to be a hero gallery plus per-category bands further down, which put
+// pictures in two places and left the lower ones stranded under whatever section
+// happened to precede them. A founder judges an image set by seeing it together.
+function allPictures(groups) {
+  return (groups || []).flatMap((g) => groupPictures(g));
+}
+
+// The gallery: a scrolling thumbnail rail beside one large stage.
+//
+// **Every take is shown by default.** The lineage is the point of keeping versions
+// append-only, and a founder deciding whether a regenerated picture beat the one it
+// replaced should not have to discover a click to compare them. It costs nothing on
+// a single-take slot, where `VersionStrip` renders nothing at all — so the strip is
+// only ever on screen when there is genuinely something to compare.
+//
+// The toggle stays, to collapse a long lineage out of the way; it just starts open
+// rather than closed.
+function AllImagesGallery({ groups, onUpdate, busy, variant = 'amazon' }) {
   const amz = variant === 'amazon';
-  const pictures = groupPictures(group);
+  const pictures = allPictures(groups);
   const [at, setAt] = useState(0);
-  // Which take of each picture is on show, keyed by `set::slot`. Per picture
-  // rather than one shared index: the slots have different version counts, so a
-  // single index would jump around as the founder moves along the rail.
+  // Which take of each picture is on show, keyed by `set::slot`. Per picture rather
+  // than one shared index: slots have different version counts, so a single index
+  // would jump around as the founder moves along the rail.
   const [verAt, setVerAt] = useState({});
+  const [openTakes, setOpenTakes] = useState(true);
 
   if (!pictures.length) {
     return (
-      <div className="aspect-square rounded-xl bg-navy-50 dark:bg-slate-800 grid place-items-center">
-        <span className="text-[12px] text-navy-500 dark:text-slate-400">No pictures yet</span>
+      <div
+        className="aspect-[4/3] grid place-items-center rounded-[8px]"
+        style={{ border: `1px dashed ${amz ? '#D5D9D9' : STORE_RULE}` }}
+      >
+        <span className="text-[12px]" style={{ color: amz ? '#565959' : STORE_MUTED }}>
+          No pictures yet
+        </span>
       </div>
     );
   }
 
-  const active = pictures[Math.min(at, pictures.length - 1)];
+  const idx = Math.min(at, pictures.length - 1);
+  const active = pictures[idx];
   const takes = slotTakes(active.slot);
-  const verIdx = verAt[active.key] != null ? Math.min(verAt[active.key], takes.length - 1) : takes.length - 1;
+  const verIdx =
+    verAt[active.key] != null ? Math.min(verAt[active.key], takes.length - 1) : takes.length - 1;
   const shown = takes[verIdx] || active.current;
   const shownSrc = versionSrc(shown) || active.src;
 
-  const selected = Math.min(at, pictures.length - 1);
-  const rail = (
-    <div className="flex gap-2 shrink-0 flex-row sm:flex-col overflow-x-auto sm:overflow-visible thin-scroll">
-      {pictures.map((p, i) => (
-        <button
-          key={p.key}
-          type="button"
-          onMouseEnter={() => setAt(i)}
-          onFocus={() => setAt(i)}
-          onClick={() => setAt(i)}
-          aria-label={p.current?.alt_text || p.slot.label || `Picture ${i + 1}`}
-          className={[
-            'relative shrink-0 overflow-hidden transition bg-white',
-            amz ? 'h-[48px] w-[48px] rounded-[8px]' : 'h-[60px] w-[60px] rounded-[10px]',
-          ].join(' ')}
-          style={
-            amz
-              ? i === selected
-                ? { border: '2px solid #E77600', boxShadow: '0 0 3px 2px rgba(228,121,17,.5)' }
-                : { border: '1px solid #D5D9D9' }
-              : {
-                  border: `1px solid ${i === selected ? STORE_INK : STORE_RULE}`,
-                  outline: i === selected ? `1px solid ${STORE_INK}` : 'none',
-                }
-          }
-        >
-          <img src={p.src} alt="" loading="lazy" className="h-full w-full object-cover" />
-          {p.current?.source === 'generated' && (
-            <span
-              className="absolute bottom-0 inset-x-0 text-[8px] font-semibold leading-[11px] text-center text-white"
-              style={{ background: 'rgba(0,0,0,.62)' }}
-            >
-              AI
-            </span>
-          )}
-        </button>
-      ))}
-    </div>
-  );
+  // Moving along the rail no longer collapses the strip. It did while the strip
+  // started closed — reopening on every picture would have fought the default —
+  // but now that it starts open, closing it on a rail click would hide the takes
+  // the founder just moved to a picture to see.
+  const pick = (i) => setAt(i);
 
   return (
     <div className="flex gap-3 flex-col-reverse sm:flex-row">
-      {rail}
+      {/* The rail is height-capped and scrolls. A thread routinely carries a dozen
+          or more pictures, and an uncapped rail made the whole page as tall as the
+          image count — which is what left screens of white beside the content. */}
+      <div className="flex gap-2 shrink-0 flex-row sm:flex-col overflow-x-auto sm:overflow-y-auto sm:max-h-[420px] thin-scroll pr-0.5">
+        {pictures.map((p, i) => {
+          const t = slotTakes(p.slot);
+          const cur = p.current;
+          return (
+            <button
+              key={p.key}
+              type="button"
+              onClick={() => pick(i)}
+              aria-label={cur?.alt_text || p.slot.label || `Picture ${i + 1}`}
+              className={[
+                'relative shrink-0 overflow-hidden transition bg-white',
+                amz ? 'h-[52px] w-[52px] rounded-[8px]' : 'h-[58px] w-[58px] rounded-[10px]',
+              ].join(' ')}
+              style={
+                i === idx
+                  ? amz
+                    ? { border: '2px solid #E77600', boxShadow: '0 0 3px 2px rgba(228,121,17,.5)' }
+                    : { border: `2px solid ${STORE_INK}` }
+                  : { border: `1px solid ${amz ? '#D5D9D9' : STORE_RULE}` }
+              }
+            >
+              <img src={p.src} alt="" loading="lazy" className="h-full w-full object-cover" />
+              {/* Source AND version on every thumbnail. Both were asked for and both
+                  earn the space: source says whether a founder is looking at their
+                  own photograph or one the Studio made, version says which take —
+                  and a regenerated slot looks identical to a first take without it. */}
+              <span
+                className="absolute bottom-0 inset-x-0 text-[8px] font-semibold leading-[12px] text-center text-white"
+                style={{ background: 'rgba(0,0,0,.66)' }}
+              >
+                {cur?.source === 'generated' ? 'AI' : 'Existing'}
+                {t.length > 1 || cur?.source === 'generated' ? ` v${cur?.version ?? 1}` : ''}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       <div className="relative flex-1 min-w-0">
-        {/* Height-capped as well as aspect-locked. Without the cap a wide pane makes
-            the stage as tall as it is wide, which pushes everything beside it down
-            and is what left a screen of white under the picture. */}
-        <div
+        <button
+          type="button"
+          onClick={() => takes.length > 1 && setOpenTakes((v) => !v)}
+          title={takes.length > 1 ? 'Show this picture’s other takes' : undefined}
           className={[
-            'overflow-hidden grid place-items-center bg-white',
-            amz ? 'aspect-square rounded-[4px] max-h-[380px]' : 'aspect-[4/5] rounded-[14px] max-h-[520px]',
+            'block w-full overflow-hidden bg-white',
+            amz ? 'rounded-[4px]' : 'rounded-[14px]',
+            takes.length > 1 ? 'cursor-pointer' : 'cursor-default',
           ].join(' ')}
-          style={amz ? { border: '1px solid #E7E7E7' } : { border: `1px solid ${STORE_RULE}` }}
+          style={{ border: `1px solid ${amz ? '#E7E7E7' : STORE_RULE}` }}
         >
           <img
             src={shownSrc}
             /* The published line, so it is the real alt rather than an empty one. */
             alt={shown?.alt_text || active.slot.label || ''}
-            className="h-full w-full object-contain"
+            className="w-full max-h-[420px] object-contain"
           />
-        </div>
+        </button>
+
         <div className="absolute top-2 right-2">
-          <SourceBadge source={shown?.source} />
+          <SourceBadge source={shown?.source} version={shown?.version} />
         </div>
-        {!isBlank(active.slot.label) && (
-          <div
-            className="mt-2 text-[11.5px] truncate"
-            style={{ color: amz ? '#565959' : STORE_MUTED }}
-          >
-            {active.slot.label}
-          </div>
+
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
+          {!isBlank(active.slot.label) && (
+            <span className="text-[12px]" style={{ color: amz ? '#565959' : STORE_MUTED }}>
+              {active.slot.label}
+            </span>
+          )}
+          {takes.length > 1 && (
+            <button
+              type="button"
+              onClick={() => setOpenTakes((v) => !v)}
+              className="text-[12px] font-medium underline underline-offset-2"
+              style={{ color: amz ? '#007185' : STORE_INK }}
+            >
+              {openTakes ? 'Hide takes' : `${takes.length} takes`}
+            </button>
+          )}
+        </div>
+
+        {openTakes && (
+          <VersionStrip
+            takes={takes}
+            at={verIdx}
+            onPick={(i) => setVerAt((prev) => ({ ...prev, [active.key]: i }))}
+          />
         )}
-        <VersionStrip
-          takes={takes}
-          at={verIdx}
-          onPick={(i) => setVerAt((prev) => ({ ...prev, [active.key]: i }))}
-        />
+
         {/* Addressed by set + slot, which IS `PdpImageRef` — the same two strings
             `generate_pdp_images` takes. The founder types the change; the handle
             comes from the picture they are looking at. */}
@@ -2580,441 +2640,212 @@ function PreviewGallery({ group, onUpdate, busy, variant = 'amazon' }) {
   );
 }
 
-// A band of pictures that are not the gallery — benefit graphics, comparison
-// charts, a facts panel. Rendered where they sit on a real page: below the fold,
-// in the order their categories were seeded.
-function PreviewImageBand({ group, onUpdate, busy, variant = 'amazon' }) {
-  const amz = variant === 'amazon';
-  const pictures = groupPictures(group);
-  if (!pictures.length) return null;
-  return (
-    <section className={amz ? 'mt-8 pt-6' : 'mt-14'} style={amz ? { borderTop: '1px solid #E7E7E7' } : undefined}>
-      <h3
-        className={amz ? 'text-[21px] font-bold' : 'text-[24px] font-semibold tracking-[-0.01em]'}
-        style={{ color: amz ? '#0F1111' : STORE_INK }}
-      >
-        {group.category}
-      </h3>
-      {!amz && <div className="mt-3 h-px w-10" style={{ background: STORE_INK, opacity: 0.35 }} />}
-      <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-4">
-        {pictures.map((p) => (
-          <BandPicture key={p.key} picture={p} onUpdate={onUpdate} busy={busy} variant={variant} />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-// One picture outside the hero rail, with the SAME affordances the hero has:
-// every take reachable, the source stated, and its own update box. Its own
-// component purely so each picture owns its selected version — a shared index
-// across a grid would move every picture at once.
-function BandPicture({ picture, onUpdate, busy, variant = 'amazon' }) {
-  const amz = variant === 'amazon';
-  const takes = slotTakes(picture.slot);
-  const [verIdx, setVerIdx] = useState(takes.length - 1);
-  const at = Math.min(verIdx, takes.length - 1);
-  const shown = takes[at] || picture.current;
-  const src = versionSrc(shown) || picture.src;
-
-  return (
-    <figure className="relative">
-      <div
-        className={['overflow-hidden bg-white', amz ? 'rounded-[4px]' : 'rounded-[12px]'].join(' ')}
-        style={{ border: `1px solid ${amz ? '#E7E7E7' : STORE_RULE}` }}
-      >
-        <img
-          src={src}
-          alt={shown?.alt_text || picture.slot.label || ''}
-          loading="lazy"
-          className="w-full object-contain"
-        />
-      </div>
-      <div className="absolute top-1.5 right-1.5">
-        <SourceBadge source={shown?.source} />
-      </div>
-      <figcaption
-        className="mt-1.5 text-[11.5px] truncate"
-        style={{ color: amz ? '#565959' : STORE_MUTED }}
-      >
-        {picture.slot.label || humanize(picture.slot.slot_key)}
-      </figcaption>
-      <VersionStrip takes={takes} at={at} onPick={setVerIdx} />
-      <div className="mt-1.5">
-        <SubtleEdit
-          label="picture"
-          placeholder="e.g. make the text larger, use the brand's green, show the pack open…"
-          onUpdate={onUpdate}
-          busy={busy}
-          compose={(instr) =>
-            `Regenerate the picture in image set "${picture.set.set_key}", slot "${picture.slot.slot_key}"` +
-            `${shown?.version ? ` (from version ${shown.version})` : ''}: ${instr}`
-          }
-        />
-      </div>
-    </figure>
-  );
-}
-
-// RETIRED — `InertValue`, a dashed chip for a value the page cannot supply. It was
-// right while the previews wore the app's styling; once they became simulations of
-// Amazon and of a storefront it stopped being, because a dashed placeholder chip is
-// exactly the kind of detail that breaks the illusion. Each preview now draws the
-// missing value in ITS OWN idiom instead — Amazon's greyed `$––` in the buy box,
-// the storefront's large muted `$––` beside a one-line note — which reads as a real
-// page with the price not yet set rather than as a form with an empty field.
+// A field's name, as the founder sees it: the SCHEMA's own name, humanised and
+// upper-cased — `a_plus_modules` → "A PLUS MODULES".
 //
-// The RULE it enforced is unchanged and still holds in both: the Studio writes no
-// price, rating or stock state, `state.listing` never reaches this screen, and
-// neither preview may invent one (ADR-0004).
-//
-// function InertValue({ children }) {
-//   return (
-//     <span className="inline-block rounded border border-dashed border-navy-200 dark:border-slate-600 px-2 py-0.5 text-[11.5px] text-navy-500 dark:text-slate-400">
-//       {children}
-//     </span>
-//   );
-// }
-
-// What the Studio wrote that a SHOPPER never sees — Amazon's backend search terms
-// and A+ tier note, a storefront's metadata block. Kept out of the page body
-// deliberately: rendering seller-side fields as page sections would misrepresent
-// what the page looks like, which is the one job this view has.
-function SellerOnly({ children }) {
+// Showing the schema name rather than a friendly rewrite is deliberate. This view
+// has to account for the artifact completely, and a founder comparing it against
+// what the Studio holds needs the two to use the same word. It is also the name the
+// edit box quotes back, so what is on screen and what is sent match.
+function FieldLabel({ name, variant = 'amazon' }) {
+  const amz = variant === 'amazon';
   return (
-    <section className="mt-8 rounded-xl border border-dashed border-navy-200 dark:border-slate-600 bg-mist dark:bg-slate-800/40 p-4">
-      <div className="text-[10.5px] font-semibold uppercase tracking-wide text-navy-500 dark:text-slate-400">
-        Not visible to shoppers
-      </div>
-      <p className="mt-0.5 text-[11.5px] text-navy-600 dark:text-slate-400">
-        Written for you to enter, not for the page to show.
-      </p>
-      <div className="mt-2">{children}</div>
-    </section>
-  );
-}
-
-// One picture: its newest take, with its own version history underneath.
-function ImageSlotCard({ slot, ratio, setKey, onUpdate, busy }) {
-  const allTakes = slotTakes(slot);
-  // Which take this card is showing. Defaults to the newest, exactly as the page
-  // preview does, so the two views never disagree about what is live.
-  const [verIdx, setVerIdx] = useState(allTakes.length - 1);
-  const at = Math.min(verIdx, allTakes.length - 1);
-  const current = allTakes[at] || currentVersion(slot);
-  const src = versionSrc(current);
-  return (
-    <div className="rounded-xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden">
-      <div className="aspect-square bg-navy-50 dark:bg-slate-800 grid place-items-center overflow-hidden">
-        {src ? (
-          <img
-            src={src}
-            /* The alt text is REAL here — it is the line the founder publishes —
-               so it is the img's actual alt rather than an empty string. */
-            alt={current?.alt_text || slot.label || ''}
-            loading="lazy"
-            className="h-full w-full object-contain"
-          />
-        ) : (
-          <span className="text-[11px] text-navy-400 dark:text-slate-500">No picture yet</span>
-        )}
-      </div>
-      <div className="p-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-[12.5px] font-medium text-navy-900 dark:text-slate-100 truncate">
-            {slot.label || humanize(slot.slot_key)}
-          </div>
-          <span className="shrink-0 text-[10.5px] px-1.5 py-0.5 rounded bg-navy-50 dark:bg-slate-800 text-navy-600 dark:text-slate-400">
-            {ratio}
-          </span>
-        </div>
-        <div className="mt-1 flex items-center gap-2 text-[11px] text-navy-600 dark:text-slate-400">
-          <span>{current?.source === 'existing' ? 'Existing photograph' : 'AI generated'}</span>
-          {allTakes.length > 1 && <span>· {allTakes.length} takes</span>}
-        </div>
-        {!isBlank(current?.alt_text) && (
-          <div className="mt-2">
-            <div className="flex items-start justify-between gap-2">
-              <div className="text-[10.5px] uppercase tracking-wide text-navy-500 dark:text-slate-400">
-                Alt text
-              </div>
-              <CopyButton text={current.alt_text} />
-            </div>
-            <p className="mt-0.5 text-[11.5px] text-navy-700 dark:text-slate-300 leading-snug break-words">
-              {current.alt_text}
-            </p>
-          </div>
-        )}
-        {/* Every take, kept and SHOWN — not hidden behind a disclosure any more.
-            Versions are append-only on the backend precisely so the lineage stays
-            readable, and the same strip the page preview uses reads them here, so
-            a founder sees the identical thing in both views. */}
-        <VersionStrip takes={allTakes} at={at} onPick={setVerIdx} />
-
-        <div className="mt-2">
-          <UpdateBox
-            label="picture"
-            placeholder="e.g. brighter background, show it in a hand for scale, no text on the image…"
-            onUpdate={onUpdate}
-            busy={busy}
-            compose={(instr) =>
-              `Regenerate the picture in image set "${setKey}", slot "${slot.slot_key}"` +
-              `${current?.version ? ` (from version ${current.version})` : ''}: ${instr}`
-            }
-          />
-        </div>
-      </div>
+    <div
+      className="text-[11px] font-bold uppercase tracking-[0.09em]"
+      style={{ color: amz ? '#565959' : STORE_MUTED }}
+    >
+      {String(name).replace(/_/g, ' ')}
     </div>
   );
 }
 
-// AMAZON — the real page's chrome, colours and layout, not ours.
+// One field of the artifact: its name, then its value. Rendered for EVERY populated
+// field — the roster below is the schema's, in schema order — and skipped entirely
+// when the value is empty. Nothing is summarised away.
+function FieldRow({ name, variant = 'amazon', children, edit }) {
+  const amz = variant === 'amazon';
+  return (
+    <section
+      className="py-4"
+      style={{ borderTop: `1px solid ${amz ? '#E7E7E7' : STORE_RULE}` }}
+    >
+      <FieldLabel name={name} variant={variant} />
+      <div className="mt-2">{children}</div>
+      {edit && <div className="mt-2.5">{edit}</div>}
+    </section>
+  );
+}
+
+// Prose inside a field. Preserves the founder's own line breaks.
+function FieldText({ value, variant = 'amazon' }) {
+  const amz = variant === 'amazon';
+  return (
+    <div
+      className={amz ? 'text-[14px] leading-[21px] whitespace-pre-wrap break-words' : 'text-[15px] leading-[1.7] whitespace-pre-wrap break-words'}
+      style={{ color: amz ? '#0F1111' : STORE_BODY }}
+    >
+      {value}
+    </div>
+  );
+}
+
+// A list inside a field.
+function FieldList({ items, variant = 'amazon' }) {
+  const amz = variant === 'amazon';
+  return (
+    <ul className="pl-[18px] space-y-2" style={{ listStyle: 'disc' }}>
+      {items.map((v, i) => (
+        <li
+          key={i}
+          className={amz ? 'text-[14px] leading-[21px] break-words' : 'text-[15px] leading-[1.7] break-words'}
+          style={{ color: amz ? '#0F1111' : STORE_BODY }}
+        >
+          {v}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// Name/value rows inside a field — an attribute set, a spec table, an FAQ. The NAME
+// is the founder's own (or the schema's, for a typed attribute), so it is shown as
+// written rather than upper-cased like a field label.
+function FieldPairs({ pairs, variant = 'amazon' }) {
+  const amz = variant === 'amazon';
+  return (
+    <dl className="grid gap-y-2">
+      {pairs.map((p, i) => (
+        <div key={`${p.name}-${i}`} className="grid grid-cols-[minmax(0,220px)_1fr] gap-4 items-start">
+          <dt
+            className="text-[12.5px] font-semibold break-words"
+            style={{ color: amz ? '#565959' : STORE_MUTED }}
+          >
+            {p.name}
+          </dt>
+          <dd
+            className={amz ? 'text-[14px] leading-[20px] break-words' : 'text-[15px] leading-[1.6] break-words'}
+            style={{ color: amz ? '#0F1111' : STORE_INK }}
+          >
+            {p.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+// AMAZON — every field of `AmazonPdpContent`, in schema order, each under its own
+// schema name, with all of the pictures above it.
 //
-// This is a SIMULATION of the destination, so it deliberately abandons the app's
-// design system inside the frame: Amazon's own greys (#0F1111 ink, #565959 muted,
-// #D5D9D9 rules), its teal links (#007185), its orange stars (#FFA41C), its yellow
-// Add-to-Cart (#FFD814 on #FCD200) and orange Buy-Now (#FFA41C on #FF8F00), the
-// Ember/Arial stack, and the three-column desktop grid — images, centre column,
-// buy box. Values are hardcoded hex rather than palette tokens on purpose: a token
-// would drift with our brand, and the whole point is that this does not.
+// **Completeness is the contract here.** A populated field always appears and an
+// empty one never does; nothing is folded into a friendlier section heading, and no
+// nested value is summarised. `a_plus_modules` shows as A PLUS MODULES and each
+// module shows MODULE TYPE / HEADING / BODY; `contextual_attributes` shows every
+// sub-field that has values, under its own name.
 //
-// **It does not follow the app's dark mode either.** Amazon has no dark mode, so a
-// preview that inverted would stop looking like the page it is previewing. The
-// frame stays light in both themes, which is why it is wrapped in a browser-chrome
-// shell — that shell reads as "another site", so a light rectangle in a dark app
-// looks deliberate rather than broken.
-//
-// Every field of `AmazonPdpContent` appears, each where Amazon puts it, except the
-// two the seller enters and a shopper never sees.
+// It keeps Amazon's colours and type — `#0F1111` ink, `#565959` labels, the
+// Ember→Arial stack — so the page still reads as the destination. What it no longer
+// carries is Amazon's nav, search bar and buy box: none of them is anything the
+// Studio writes, so they were chrome the founder could not act on.
 function AmazonPagePreview({ amazon, groups, onUpdate, busy }) {
-  const { gallery, rest } = pickGallery(groups);
-  // Every field name here is the SCHEMA's, quoted, so the Studio's path executor
-  // has an exact handle to resolve — Amazon paths are validated CLOSED against
-  // `model_fields`, so a paraphrase would fail to resolve where the real name
-  // cannot.
-  const editField = (name, human) => (instr) =>
-    `Update the Amazon listing content at "${name}" (${human}): ${instr}`;
+  const editField = (name) => (instr) =>
+    `Update the Amazon listing content at "${name}": ${instr}`;
 
   const attrs = amazon.contextual_attributes || {};
   const contextual = Object.entries(attrs).filter(([, v]) => Array.isArray(v) && v.length);
-  const details = [
-    ...contextual.map(([name, values]) => ({ name: humanize(name), value: values.join(', ') })),
-    ...(amazon.other_attributes || []),
-  ];
+  const modules = amazon.a_plus_modules || [];
+
+  const box = (name, node, editName = name) =>
+    node == null ? null : (
+      <FieldRow
+        name={name}
+        variant="amazon"
+        edit={
+          <SubtleEdit
+            label={String(name).replace(/_/g, ' ')}
+            placeholder="Say what to change about this field…"
+            onUpdate={onUpdate}
+            busy={busy}
+            compose={editField(editName)}
+          />
+        }
+      >
+        {node}
+      </FieldRow>
+    );
 
   return (
-    <>
-    <SiteFrame host="www.amazon.com" path="/dp/B0XXXXXXXX">
-      {/* Amazon's own navigation. It carries no data of ours — it exists so the
-          page reads as Amazon at a glance, which is the entire brief. */}
-      <div style={{ background: '#131921' }} className="px-4 py-2.5 flex items-center gap-4">
-        <span className="text-white font-bold text-[18px] tracking-tight lowercase">amazon</span>
-        <div className="flex-1 h-[30px] rounded bg-white/95 flex items-center px-2.5">
-          <span className="text-[12px] text-[#565959]">Search Amazon</span>
-        </div>
-        <span className="text-white text-[11px] hidden sm:inline">Returns &amp; Orders</span>
-        <span className="text-white text-[11px]">Cart</span>
-      </div>
-      <div style={{ background: '#232F3E' }} className="px-4 py-1.5 text-white text-[11.5px]">
-        All · Today's Deals · Customer Service · Registry
-      </div>
+    <SiteFrame label="Amazon listing">
+      <div style={AMZ_FONT} className="bg-white px-5 py-5">
+        <AllImagesGallery groups={groups} variant="amazon" onUpdate={onUpdate} busy={busy} />
 
-      <div style={AMZ_FONT} className="bg-white">
-        <div className="px-4 pt-2.5 text-[12px]" style={{ color: '#565959' }}>
-          Back to results
-        </div>
+        <div className="mt-6">
+          {box(
+            'title',
+            isBlank(amazon.title) ? null : (
+              <h1 className="text-[22px] leading-[28px] font-normal break-words" style={{ color: '#0F1111' }}>
+                {amazon.title}
+              </h1>
+            ),
+          )}
 
-        {/* THREE columns only when there is genuinely room for three.
-            Tailwind's breakpoints measure the VIEWPORT, and this canvas is a pane
-            beside a resizable chat, so `lg:` fired on a wide screen while the pane
-            itself was ~700px — which squeezed the centre column to about five words
-            a line and left the gallery column with a tall dead gap beside it.
-            `2xl:` is the first breakpoint where the pane is reliably wide enough for
-            Amazon's real three-column layout; below it the buy box spans underneath,
-            which is what Amazon's own responsive layout does. */}
-        <div className="px-4 pb-6 grid grid-cols-1 xl:grid-cols-[minmax(0,300px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)_minmax(0,236px)] gap-x-6">
-          {/* IMAGES — sticky and top-aligned so a long centre column does not leave
-              a screen of white beside a square photograph. */}
-          <div className="min-w-0 pt-3 xl:sticky xl:top-3 self-start">
-            <PreviewGallery group={gallery} variant="amazon" onUpdate={onUpdate} busy={busy} />
-          </div>
+          {box(
+            'item_highlights',
+            isBlank(amazon.item_highlights) ? null : (
+              <FieldText value={amazon.item_highlights} variant="amazon" />
+            ),
+          )}
 
-          {/* CENTRE COLUMN. Capped measure: with the gallery no longer eating 44%
-              this column can get very wide on a large pane, and a 14px bullet run
-              across 900px is as hard to read as one across 200px. */}
-          <div className="min-w-0 pt-3 max-w-[680px]">
-            <h1
-              className="text-[24px] leading-[32px] font-normal break-words"
-              style={{ color: '#0F1111' }}
-            >
-              {amazon.title || <span style={{ color: '#8C8C8C' }}>No title written yet</span>}
-            </h1>
-            <div className="mt-1">
-              <span className="text-[14px]" style={{ color: '#007185' }}>
-                Visit the Store
-              </span>
-            </div>
+          {box(
+            'bullet_points',
+            amazon.bullet_points?.length ? (
+              <FieldList items={amazon.bullet_points} variant="amazon" />
+            ) : null,
+          )}
 
-            <div className="mt-1.5 flex items-center gap-1.5">
-              <Stars />
-              <span className="text-[14px]" style={{ color: '#007185' }}>
-                Ratings shown by Amazon
-              </span>
-            </div>
-            <div className="mt-1.5">
-              <SubtleEdit
-                label="title"
-                placeholder="e.g. lead with the category noun, work the material in, drop the brand repetition…"
-                onUpdate={onUpdate}
-                busy={busy}
-                compose={editField('title', 'the listing title')}
-              />
-            </div>
+          {box(
+            'product_description',
+            isBlank(amazon.product_description) ? null : (
+              <FieldText value={amazon.product_description} variant="amazon" />
+            ),
+          )}
 
-            <Rule />
-
-            <div className="text-[14px]" style={{ color: '#565959' }}>
-              Price and delivery are set in Seller Central — not part of what is written here.
-            </div>
-
-            {!isBlank(amazon.item_highlights) && (
-              <>
-                <Rule />
-                <div
-                  className="text-[14px] leading-[20px] whitespace-pre-wrap break-words"
-                  style={{ color: '#0F1111' }}
-                >
-                  {amazon.item_highlights}
-                </div>
-                <div className="mt-2">
-                  <SubtleEdit
-                    label="highlights"
-                    placeholder="e.g. name the material, add the use case the title can't hold…"
-                    onUpdate={onUpdate}
-                    busy={busy}
-                    compose={editField('item_highlights', 'the item highlights')}
-                  />
-                </div>
-              </>
-            )}
-
-            {!!amazon.bullet_points?.length && (
-              <>
-                <Rule />
-                <div className="text-[16px] font-bold" style={{ color: '#0F1111' }}>
-                  About this item
-                </div>
-                <ul className="mt-2 pl-[18px] space-y-2" style={{ listStyle: 'disc' }}>
-                  {amazon.bullet_points.map((b, i) => (
-                    <li
-                      key={i}
-                      className="text-[14px] leading-[20px] break-words"
-                      style={{ color: '#0F1111' }}
-                    >
-                      {b}
-                    </li>
-                  ))}
-                </ul>
-                <div className="mt-2.5">
-                  <SubtleEdit
-                    label="bullets"
-                    placeholder="e.g. lead each one with the benefit, move the compatibility bullet up…"
-                    onUpdate={onUpdate}
-                    busy={busy}
-                    compose={editField('bullet_points', 'the five feature bullets')}
-                  />
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* BUY BOX — every value in it is Amazon's, so every one is inert.
-              Spans both columns until there is room for a third, so it never
-              squeezes the centre column to hold a 236px rail. */}
-          <div className="min-w-0 pt-3 xl:col-span-2 xl:max-w-[420px] 2xl:col-span-1 2xl:max-w-none 2xl:sticky 2xl:top-3 self-start">
-            <div
-              className="rounded-[8px] p-[14px]"
-              style={{ border: '1px solid #D5D9D9', background: '#FFFFFF' }}
-            >
-              <div className="text-[28px] leading-[32px]" style={{ color: '#0F1111' }}>
-                <span className="text-[13px] align-super">$</span>
-                <span style={{ color: '#8C8C8C' }}>––</span>
-                <span className="text-[13px] align-super">00</span>
-              </div>
-              <div className="mt-1 text-[12px]" style={{ color: '#565959' }}>
-                Price comes from Seller Central
-              </div>
-              <div className="mt-3 text-[14px]" style={{ color: '#565959' }}>
-                FREE delivery shown by Amazon
-              </div>
-              <div className="mt-2 text-[18px]" style={{ color: '#007600' }}>
-                In Stock
-              </div>
-              <button
-                type="button"
-                disabled
-                className="mt-3 w-full text-[13px] py-[7px] cursor-not-allowed"
-                style={{
-                  background: '#FFD814',
-                  border: '1px solid #FCD200',
-                  borderRadius: '100px',
-                  color: '#0F1111',
-                }}
-              >
-                Add to Cart
-              </button>
-              <button
-                type="button"
-                disabled
-                className="mt-2 w-full text-[13px] py-[7px] cursor-not-allowed"
-                style={{
-                  background: '#FFA41C',
-                  border: '1px solid #FF8F00',
-                  borderRadius: '100px',
-                  color: '#0F1111',
-                }}
-              >
-                Buy Now
-              </button>
-              <div className="mt-3 text-[12px] leading-[16px]" style={{ color: '#565959' }}>
-                Ships from and sold by Amazon.com
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* BELOW THE FOLD */}
-        <div className="px-4 pb-8">
-          {!!amazon.a_plus_modules?.length && (
-            <section style={{ borderTop: '1px solid #E7E7E7' }} className="pt-6">
-              <h2 className="text-[21px] font-bold" style={{ color: '#0F1111' }}>
-                From the brand
-              </h2>
-              <div className="mt-4 space-y-7">
-                {amazon.a_plus_modules.map((m, i) => (
-                  <div key={i}>
-                    <div className="text-[19px] font-bold" style={{ color: '#0F1111' }}>
-                      {m.heading}
+          {box(
+            'a_plus_modules',
+            modules.length ? (
+              <div className="space-y-4">
+                {modules.map((m, i) => (
+                  <div
+                    key={i}
+                    className="rounded-[6px] p-3"
+                    style={{ border: '1px solid #E7E7E7', background: '#F7F8F8' }}
+                  >
+                    <div className="text-[11px] font-bold" style={{ color: '#565959' }}>
+                      MODULE {i + 1}
                     </div>
-                    <div
-                      className="mt-1.5 text-[14px] leading-[21px] whitespace-pre-wrap break-words"
-                      style={{ color: '#0F1111' }}
-                    >
-                      {m.body}
+                    <div className="mt-2 grid gap-2">
+                      {!isBlank(m.module_type) && (
+                        <div>
+                          <FieldLabel name="module_type" variant="amazon" />
+                          <FieldText value={m.module_type} variant="amazon" />
+                        </div>
+                      )}
+                      {!isBlank(m.heading) && (
+                        <div>
+                          <FieldLabel name="heading" variant="amazon" />
+                          <FieldText value={m.heading} variant="amazon" />
+                        </div>
+                      )}
+                      {!isBlank(m.body) && (
+                        <div>
+                          <FieldLabel name="body" variant="amazon" />
+                          <FieldText value={m.body} variant="amazon" />
+                        </div>
+                      )}
                     </div>
-                    {/* The module TYPE decides its picture layout, and nothing
-                        records which pictures belong to which module — the last
-                        content→image reference was removed on purpose. So the type
-                        is stated and the founder pairs them up from the bands
-                        below, which is the documented cost of that decision. */}
-                    {!isBlank(m.module_type) && (
-                      <div className="mt-1 text-[12px] uppercase tracking-wide" style={{ color: '#565959' }}>
-                        {m.module_type}
-                      </div>
-                    )}
-                    <div className="mt-2">
+                    <div className="mt-2.5">
                       <SubtleEdit
-                        label="module"
+                        label={`module ${i + 1}`}
                         placeholder="e.g. shorter heading, lead with the problem, cut the last sentence…"
                         onUpdate={onUpdate}
                         busy={busy}
@@ -3026,298 +2857,147 @@ function AmazonPagePreview({ amazon, groups, onUpdate, busy }) {
                   </div>
                 ))}
               </div>
-              <div className="mt-4">
-                <SubtleEdit
-                  label="the A+ set"
-                  placeholder="e.g. add a comparison module, drop the last one, reorder so the how-to comes first…"
-                  onUpdate={onUpdate}
-                  busy={busy}
-                  compose={editField('a_plus_modules', 'the A+ content modules')}
-                />
-              </div>
-            </section>
+            ) : null,
           )}
 
-          {rest.map((group) => (
-            <PreviewImageBand
-              key={group.category}
-              group={group}
-              variant="amazon"
-              onUpdate={onUpdate}
-              busy={busy}
-            />
-          ))}
-
-          {!isBlank(amazon.product_description) && (
-            <section style={{ borderTop: '1px solid #E7E7E7' }} className="mt-8 pt-6">
-              <h2 className="text-[21px] font-bold" style={{ color: '#0F1111' }}>
-                Product description
-              </h2>
-              <div
-                className="mt-3 text-[14px] leading-[21px] whitespace-pre-wrap break-words"
-                style={{ color: '#0F1111' }}
-              >
-                {amazon.product_description}
-              </div>
-              <div className="mt-2.5">
-                <SubtleEdit
-                  label="description"
-                  placeholder="e.g. it has to stand alone in case A+ suppresses it — make the opening carry the argument…"
-                  onUpdate={onUpdate}
-                  busy={busy}
-                  compose={editField('product_description', 'the product description')}
-                />
-              </div>
-            </section>
+          {box(
+            'a_plus_tier_note',
+            isBlank(amazon.a_plus_tier_note) ? null : (
+              <FieldText value={amazon.a_plus_tier_note} variant="amazon" />
+            ),
           )}
 
-          {!!details.length && (
-            <section style={{ borderTop: '1px solid #E7E7E7' }} className="mt-8 pt-6">
-              <h2 className="text-[21px] font-bold" style={{ color: '#0F1111' }}>
-                Product information
-              </h2>
-              <AmazonDetailsTable details={details} />
-              <div className="mt-2.5">
-                <SubtleEdit
-                  label="details"
-                  placeholder="e.g. fill in what it's compatible with, add the age range, name the material properly…"
-                  onUpdate={onUpdate}
-                  busy={busy}
-                  compose={(instr) =>
-                    `Update the Amazon listing's attributes — "contextual_attributes" and "other_attributes": ${instr}`
-                  }
-                />
+          {box(
+            'backend_search_terms',
+            isBlank(amazon.backend_search_terms) ? null : (
+              <div className="text-[13px] font-mono leading-[20px] break-words" style={{ color: '#0F1111' }}>
+                {amazon.backend_search_terms}
               </div>
-            </section>
+            ),
+          )}
+
+          {box(
+            'contextual_attributes',
+            contextual.length ? (
+              <div className="grid gap-3">
+                {contextual.map(([name, values]) => (
+                  <div key={name}>
+                    <FieldLabel name={name} variant="amazon" />
+                    <FieldList items={values} variant="amazon" />
+                  </div>
+                ))}
+              </div>
+            ) : null,
+          )}
+
+          {box(
+            'other_attributes',
+            amazon.other_attributes?.length ? (
+              <FieldPairs pairs={amazon.other_attributes} variant="amazon" />
+            ) : null,
           )}
         </div>
       </div>
     </SiteFrame>
-
-      {/* OUTSIDE the browser frame on purpose: this is our note ABOUT the page, not
-          part of it, and the fields in it never render on Amazon at all. */}
-      {(!isBlank(amazon.backend_search_terms) || !isBlank(amazon.a_plus_tier_note)) && (
-        <SellerOnly>
-          {!isBlank(amazon.backend_search_terms) && (
-            <>
-              <CopyField label="Backend search terms" value={amazon.backend_search_terms} mono />
-              <div className="mt-1.5">
-                <UpdateBox
-                  label="search terms"
-                  placeholder="e.g. drop anything the title already says, add the misspellings buyers use…"
-                  onUpdate={onUpdate}
-                  busy={busy}
-                  compose={editField('backend_search_terms', 'the backend search terms')}
-                />
-              </div>
-            </>
-          )}
-          {!isBlank(amazon.a_plus_tier_note) && (
-            <p className="mt-2 text-[11.5px] italic text-navy-600 dark:text-slate-400 leading-relaxed">
-              {amazon.a_plus_tier_note}
-            </p>
-          )}
-        </SellerOnly>
-      )}
-    </>
   );
 }
 
-// Blocks that belong ABOVE THE FOLD, beside the gallery, rather than as a section
-// further down. The roster is the content prompt's own above-the-fold list, so it
-// is what the model was actually told to write — not a guess.
+// The markup layer. A page carries it, a shopper never sees it — but it is still a
+// field of the artifact, so it renders like every other one rather than being
+// hidden. Kept as a named set because the storefront schema is OPEN and this is the
+// only block whose meaning is fixed.
+// RETIRED — it lifted the metadata layer out of the page body, back when the
+// preview simulated what a SHOPPER sees. The brief changed: every populated field
+// of the artifact is shown, in schema order, under its own name — so the metadata
+// block renders like any other block rather than being moved somewhere special.
 //
-// **Matched by `field`, and an unmatched block simply becomes a section.** That is
-// the safe direction to be wrong in: a block that should have been in the buy
-// column merely appears lower, while a matcher that over-reached would take a real
-// section OUT of the page body.
-const HERO_FIELDS = new Set([
-  'title', 'product_title',
-  'value_proposition', 'value_prop',
-  'price', 'pricing', 'price_presentation',
-  'variants', 'variant_choice', 'variant_selection',
-  'cta', 'call_to_action', 'primary_call_to_action',
-  'rating', 'rating_summary',
-  'reassurance', 'reassurance_strip',
-]);
-// The markup layer. A page carries it, a shopper never sees it, so it is lifted
-// out of the body — the same treatment Amazon's backend search terms get.
-const SELLER_ONLY_FIELDS = new Set(['metadata', 'meta', 'seo_metadata', 'structured_data']);
+// const SELLER_ONLY_FIELDS = new Set(['metadata', 'meta', 'seo_metadata', 'structured_data']);
 
-const heroBlock = (blocks, ...names) =>
-  blocks.find((b) => names.includes(b.field)) || null;
-
-// The storefront's spec rows — the other genuinely unbounded list, collapsed past
-// twelve for the same reason Amazon's attribute table is: a `pairs` block is
-// whatever the model composed, and nothing caps it.
-function StoreSpecRows({ pairs }) {
-  const [open, setOpen] = useState(false);
-  const LIMIT = 12;
-  const all = pairs || [];
-  const rows = open ? all : all.slice(0, LIMIT);
-  return (
-    <>
-      <dl className="mt-4 max-w-[74ch]">
-        {rows.map((p, i) => (
-          <div
-            key={`${p.name}-${i}`}
-            className="grid grid-cols-[minmax(0,34%)_1fr] gap-4 py-3"
-            style={{ borderTop: i === 0 ? 'none' : `1px solid ${STORE_RULE}` }}
-          >
-            <dt className="text-[13px] uppercase tracking-[0.06em]" style={{ color: STORE_MUTED }}>
-              {p.name}
-            </dt>
-            <dd className="text-[15px] leading-[1.6] break-words" style={{ color: STORE_INK }}>
-              {p.value}
-            </dd>
-          </div>
-        ))}
-      </dl>
-      {all.length > LIMIT && (
-        <MoreToggle
-          open={open}
-          onToggle={() => setOpen((v) => !v)}
-          hidden={all.length - LIMIT}
-          label="See all specifications"
-          tone="store"
-        />
-      )}
-    </>
-  );
-}
-
-// A block rendered as a real page SECTION on the storefront preview: the heading is
-// a heading, prose is prose, a list is a feature list, and pairs become a spec
-// table or a Q&A depending on nothing but their own shape. Recurses on 'dict'
-// exactly as `ContentBlock` does, because 'dict' is still the only kind that nests
-// and the depth is still the model's to choose.
+// A block rendered as a field: its own `field` name upper-cased as the label, then
+// its value in whichever of the four shapes its `kind` names. Recurses on 'dict',
+// because 'dict' is still the only kind that nests and the depth is still the
+// model's to choose.
 //
-// Styled in the storefront's own palette (STORE_INK / STORE_MUTED / STORE_RULE)
-// rather than the app's, for the same reason the Amazon preview is: this is a
-// simulation of somebody else's page.
-function PageSection({ block, depth = 0, onUpdate, busy, compose }) {
+// **The `label` the model wrote is shown too when it differs from the field name** —
+// that is the heading a buyer would read, and it is content rather than plumbing.
+function PageSection({ block, depth = 0, onUpdate, busy, compose, variant = 'store' }) {
   if (!block) return null;
-  const heading = block.label || humanize(block.field);
-  const H = depth === 0 ? 'h2' : depth === 1 ? 'h3' : 'h4';
+  const amz = variant === 'amazon';
+  const showLabel = !isBlank(block.label) && humanize(block.field).toLowerCase() !== block.label.toLowerCase();
 
-  // A pairs block whose names read as questions is an FAQ, and an FAQ laid out as
-  // a spec table is unreadable. Detected from the CONTENT rather than the field
-  // name, because `field` is the model's to choose and a question mark is not.
-  const asQA =
-    block.kind === 'pairs' &&
-    (block.pairs || []).length > 0 &&
-    (block.pairs || []).filter((p) => /\?\s*$/.test(p.name || '')).length >=
-      Math.ceil((block.pairs || []).length / 2);
-
-  return (
-    <section className={depth === 0 ? 'mt-14 first:mt-0' : 'mt-7'}>
-      <H
-        className={
-          depth === 0
-            ? 'text-[24px] leading-tight font-semibold tracking-[-0.01em]'
-            : depth === 1
-              ? 'text-[16px] font-semibold'
-              : 'text-[14px] font-semibold'
-        }
-        style={{ color: STORE_INK }}
-      >
-        {heading}
-      </H>
-      {depth === 0 && (
-        <div className="mt-3 h-px w-10" style={{ background: STORE_INK, opacity: 0.35 }} />
+  const body = (
+    <>
+      {showLabel && (
+        <div
+          className={depth === 0 ? 'text-[17px] font-semibold mb-2' : 'text-[14px] font-semibold mb-1.5'}
+          style={{ color: amz ? '#0F1111' : STORE_INK }}
+        >
+          {block.label}
+        </div>
       )}
 
       {block.kind === 'str' && !isBlank(block.text) && (
-        <div className="mt-4 text-[15px] leading-[1.75] max-w-[68ch]" style={{ color: STORE_BODY }}>
+        <div
+          className="text-[15px] leading-[1.7] max-w-[70ch]"
+          style={{ color: amz ? '#0F1111' : STORE_BODY }}
+        >
           <Markdown text={block.text} plain />
         </div>
       )}
 
       {block.kind === 'list' && !!block.items?.length && (
-        <ul className="mt-4 grid gap-2.5 sm:grid-cols-2 max-w-[74ch]">
-          {block.items.map((item, i) => (
-            <li key={i} className="flex items-start gap-2.5 text-[15px] leading-[1.6] break-words" style={{ color: STORE_BODY }}>
-              <span
-                className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ background: STORE_ACCENT }}
-              />
-              {item}
-            </li>
-          ))}
-        </ul>
+        <FieldList items={block.items} variant={variant} />
       )}
 
-      {block.kind === 'pairs' && !asQA && <StoreSpecRows pairs={block.pairs} />}
-
-      {block.kind === 'pairs' && asQA && (
-        <div className="mt-4 max-w-[74ch]">
-          {(block.pairs || []).map((p, i) => (
-            <details
-              key={`${p.name}-${i}`}
-              className="group py-4"
-              style={{ borderTop: i === 0 ? 'none' : `1px solid ${STORE_RULE}` }}
-            >
-              <summary
-                className="cursor-pointer list-none flex items-start justify-between gap-4 text-[15px] font-medium"
-                style={{ color: STORE_INK }}
-              >
-                {p.name}
-                <span
-                  className="mt-0.5 shrink-0 text-[18px] leading-none transition-transform group-open:rotate-45"
-                  style={{ color: STORE_MUTED }}
-                >
-                  +
-                </span>
-              </summary>
-              <div className="mt-2.5 text-[15px] leading-[1.7] break-words" style={{ color: STORE_BODY }}>
-                {p.value}
-              </div>
-            </details>
-          ))}
-        </div>
+      {block.kind === 'pairs' && !!block.pairs?.length && (
+        <FieldPairs pairs={block.pairs} variant={variant} />
       )}
 
       {block.kind === 'dict' &&
         (block.blocks || []).map((child, i) => (
-          <PageSection key={`${child.field}-${i}`} block={child} depth={depth + 1} />
+          <div key={`${child.field}-${i}`} className="mt-4 pl-3" style={{ borderLeft: `2px solid ${STORE_RULE}` }}>
+            <FieldLabel name={child.field} variant={variant} />
+            <div className="mt-1.5">
+              <PageSection block={child} depth={depth + 1} variant={variant} />
+            </div>
+          </div>
         ))}
+    </>
+  );
 
-      {/* Only the TOP-LEVEL section carries an update box. A child block is
-          reachable by naming it in the instruction, and a box per nested block
-          would put one on every row of a size chart. */}
-      {depth === 0 && compose && (
-        <div className="mt-4">
+  // A nested block is wrapped by its parent, which already drew its label and rule.
+  if (depth > 0) return body;
+
+  return (
+    <FieldRow
+      name={block.field}
+      variant={variant}
+      edit={
+        compose ? (
           <SubtleEdit
-            label={`“${heading}”`}
+            label={humanize(block.field)}
             placeholder="e.g. shorter, answer the returns question here, add the size a buyer asks about…"
             onUpdate={onUpdate}
             busy={busy}
             compose={compose}
           />
-        </div>
-      )}
-    </section>
+        ) : null
+      }
+    >
+      {body}
+    </FieldRow>
   );
 }
 
-// EVERY OTHER STOREFRONT — a premium direct-to-consumer product page, and styled
-// like one rather than like our app: a warm off-white ground, near-black ink, one
-// restrained accent, generous type and a lot of air.
+// EVERY OTHER STOREFRONT — every block the Studio wrote, in `blocks` order, each
+// under its own `field` name, with all of the pictures above them.
 //
-// **The same reasoning as the Amazon preview, in the other direction.** There, the
-// destination has a look and copying it exactly is the brief. Here there is no
-// single destination, so the target is what a good storefront PDP looks like in
-// general — big sticky imagery, a quiet buy column, sections that breathe. It is
-// deliberately NOT the app's navy/mint: a founder is judging their page, and a
-// page wearing our chrome is hard to judge as theirs.
-//
-// Light-only in both themes, for the reason `SiteFrame` exists.
-//
-// `blocks` IS the page order — there is no second ordering to disagree with it —
-// so this renders them in sequence and pulls out only two kinds: the handful that
-// belong beside the gallery, and the metadata layer, which no shopper sees.
+// `blocks` IS the page order and there is no second ordering to disagree with it,
+// so nothing is lifted out or reordered any more: the above-the-fold roster and the
+// buy column are gone with the buy box, and the metadata block renders in place
+// like every other field. Completeness is the contract, exactly as on the Amazon
+// side — a populated block always appears, an empty one never does.
 function StorefrontPagePreview({ generic, groups, onUpdate, busy }) {
-  const { gallery, rest } = pickGallery(groups);
   const blocks = generic.blocks || [];
   // A generic path is OPEN — validated only by resolution — so the `field` handle
   // is what the Studio needs to find the block. It is stable across turns by
@@ -3325,217 +3005,25 @@ function StorefrontPagePreview({ generic, groups, onUpdate, busy }) {
   const editBlock = (block) => (instr) =>
     `Update the "${block.field}" block${block.label ? ` (${block.label})` : ''} on the product page content: ${instr}`;
 
-  const titleBlock = heroBlock(blocks, 'title', 'product_title');
-  const valueBlock = heroBlock(blocks, 'value_proposition', 'value_prop');
-  const priceBlock = heroBlock(blocks, 'price', 'pricing', 'price_presentation');
-  const variantBlock = heroBlock(blocks, 'variants', 'variant_choice', 'variant_selection');
-  const ctaBlock = heroBlock(blocks, 'cta', 'call_to_action', 'primary_call_to_action');
-  const reassuranceBlock = heroBlock(blocks, 'reassurance', 'reassurance_strip');
-
-  const sections = blocks.filter(
-    (b) => !HERO_FIELDS.has(b.field) && !SELLER_ONLY_FIELDS.has(b.field),
-  );
-  const sellerOnly = blocks.filter((b) => SELLER_ONLY_FIELDS.has(b.field));
-
-  const ctaLabel =
-    (ctaBlock?.kind === 'str' && ctaBlock.text) || (ctaBlock?.items || [])[0] || 'Add to cart';
-
   return (
-    <>
-    <SiteFrame host="your-store.com" path="/products/…">
-      <div style={{ ...STORE_FONT, background: STORE_BG }}>
-        {/* The storefront's own header — a wordmark and a thin nav, enough to read
-            as a shop rather than as a panel in our app. */}
-        <div
-          className="px-7 py-4 flex items-center justify-between"
-          style={{ borderBottom: `1px solid ${STORE_RULE}` }}
-        >
-          <span
-            className="text-[15px] font-semibold tracking-[0.14em] uppercase"
-            style={{ color: STORE_INK }}
-          >
-            Your Brand
-          </span>
-          <div className="hidden sm:flex items-center gap-6 text-[13px]" style={{ color: STORE_MUTED }}>
-            <span>Shop</span>
-            <span>About</span>
-            <span>Journal</span>
-            <span>Cart (0)</span>
-          </div>
-        </div>
+    <SiteFrame label="Storefront product page">
+      <div style={{ ...STORE_FONT, background: STORE_BG }} className="px-6 py-6">
+        <AllImagesGallery groups={groups} variant="store" onUpdate={onUpdate} busy={busy} />
 
-        {/* ABOVE THE FOLD */}
-        {/* Same reasoning as the Amazon grid: `lg:` measures the viewport, not this
-            pane. `xl:` is where a two-column storefront hero stops cramping, and the
-            buy column is capped so its copy keeps a readable measure instead of
-            stretching across a wide pane. */}
-        <div className="px-7 py-9 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,380px)] gap-8 xl:gap-12">
-          <div className="min-w-0 xl:sticky xl:top-4 self-start">
-            <PreviewGallery group={gallery} variant="store" onUpdate={onUpdate} busy={busy} />
-          </div>
-
-          <div className="min-w-0 xl:pt-3 max-w-[560px]">
-            <div
-              className="text-[11.5px] uppercase tracking-[0.16em]"
-              style={{ color: STORE_MUTED }}
-            >
-              Product
-            </div>
-            <h1
-              className="mt-2.5 text-[36px] leading-[1.1] font-semibold tracking-[-0.02em] break-words"
-              style={{ color: STORE_INK }}
-            >
-              {(titleBlock?.kind === 'str' && titleBlock.text) ||
-                titleBlock?.label || (
-                  <span style={{ color: STORE_MUTED }}>No title written yet</span>
-                )}
-            </h1>
-
-            {valueBlock && (
-              <p
-                className="mt-4 text-[17px] leading-[1.6] break-words max-w-[46ch]"
-                style={{ color: STORE_BODY }}
-              >
-                {valueBlock.kind === 'str' ? valueBlock.text : (valueBlock.items || []).join(' · ')}
-              </p>
-            )}
-
-            <div className="mt-7 pt-6" style={{ borderTop: `1px solid ${STORE_RULE}` }}>
-              {priceBlock?.kind === 'str' && !isBlank(priceBlock.text) ? (
-                <div className="text-[15px] leading-[1.6]" style={{ color: STORE_INK }}>
-                  {priceBlock.text}
-                </div>
-              ) : (
-                <div className="flex items-baseline gap-3">
-                  <span className="text-[30px] font-semibold" style={{ color: STORE_MUTED }}>
-                    $––
-                  </span>
-                  <span className="text-[12.5px]" style={{ color: STORE_MUTED }}>
-                    price comes from your store
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {variantBlock && (
-              <div className="mt-7">
-                <div
-                  className="text-[11.5px] uppercase tracking-[0.14em]"
-                  style={{ color: STORE_MUTED }}
-                >
-                  {variantBlock.label || 'Options'}
-                </div>
-                <div className="mt-2.5 flex flex-wrap gap-2">
-                  {/* All three shapes a variant block can arrive in. Without the
-                      'str' case a written-out sentence renders as an empty row
-                      under a heading, which reads as a bug rather than as copy. */}
-                  {(variantBlock.kind === 'list'
-                    ? variantBlock.items
-                    : variantBlock.kind === 'pairs'
-                      ? (variantBlock.pairs || []).map((p) => `${p.name}: ${p.value}`)
-                      : [variantBlock.text].filter((s) => !isBlank(s))
-                  ).map((v, i) => (
-                    <span
-                      key={i}
-                      className="rounded-full px-4 py-2 text-[13.5px]"
-                      style={{
-                        border: `1px solid ${i === 0 ? STORE_INK : STORE_RULE}`,
-                        color: STORE_INK,
-                        background: i === 0 ? '#FFFFFF' : 'transparent',
-                      }}
-                    >
-                      {v}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <button
-              type="button"
-              disabled
-              className="mt-7 w-full rounded-full text-[14.5px] font-medium py-4 cursor-not-allowed tracking-wide"
-              style={{ background: STORE_INK, color: '#FFFFFF' }}
-            >
-              {ctaLabel}
-            </button>
-
-            {reassuranceBlock && (
-              <ul className="mt-5 grid gap-2.5">
-                {(reassuranceBlock.kind === 'list'
-                  ? reassuranceBlock.items
-                  : [reassuranceBlock.text].filter(Boolean)
-                ).map((r, i) => (
-                  <li
-                    key={i}
-                    className="flex items-center gap-2.5 text-[13.5px]"
-                    style={{ color: STORE_BODY }}
-                  >
-                    <IconCheck width={13} height={13} style={{ color: STORE_ACCENT }} />
-                    {r}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {/* ONE box for the whole buy column. Its blocks are short and read as a
-                single unit — a founder revising the value proposition is usually
-                revising the title with it — and five separate boxes here would
-                crowd the one part of the page that has to stay scannable. */}
-            <div className="mt-7">
-              <SubtleEdit
-                label="the top of the page"
-                placeholder="e.g. sharper value proposition, name the size in the title, stronger button wording…"
-                onUpdate={onUpdate}
-                busy={busy}
-                compose={(instr) =>
-                  'Update the above-the-fold blocks on the product page content — ' +
-                  [titleBlock, valueBlock, priceBlock, variantBlock, ctaBlock, reassuranceBlock]
-                    .filter(Boolean)
-                    .map((b) => `"${b.field}"`)
-                    .join(', ') +
-                  `: ${instr}`
-                }
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* BELOW THE FOLD */}
-        <div className="px-7 pb-14 max-w-[900px]">
-          {sections.map((block, i) => (
+        <div className="mt-6">
+          {blocks.map((block, i) => (
             <PageSection
               key={`${block.field}-${i}`}
               block={block}
+              variant="store"
               onUpdate={onUpdate}
               busy={busy}
               compose={editBlock(block)}
             />
           ))}
-
-          {rest.map((group) => (
-            <PreviewImageBand
-              key={group.category}
-              group={group}
-              variant="store"
-              onUpdate={onUpdate}
-              busy={busy}
-            />
-          ))}
         </div>
       </div>
     </SiteFrame>
-
-      {/* OUTSIDE the browser frame, like Amazon's seller-only fields: the metadata
-          layer is markup the page carries and a shopper never sees. */}
-      {!!sellerOnly.length && (
-        <SellerOnly>
-          {sellerOnly.map((block, i) => (
-            <ContentBlock key={`${block.field}-${i}`} block={block} />
-          ))}
-        </SellerOnly>
-      )}
-    </>
   );
 }
 
@@ -3551,9 +3039,6 @@ function StudioView({ content, imageSets, note, onUpdate, busy }) {
     0,
   );
   const [mode, setMode] = useState('page'); // 'page' | 'fields'
-  // Only read on the pictures-but-no-copy path, but computed here so the two
-  // halves of it can never disagree about which group is the gallery.
-  const picturesOnly = pickGallery(groups);
 
   if (!page && !pictureCount) {
     return (
@@ -3617,12 +3102,9 @@ function StudioView({ content, imageSets, note, onUpdate, busy }) {
               No copy has been written yet, so there is no page to lay out. Ask for the words in
               the chat.
             </p>
-            <div className="mt-4 max-w-[420px]">
-              <PreviewGallery group={picturesOnly.gallery} onUpdate={onUpdate} busy={busy} />
+            <div className="mt-4">
+              <AllImagesGallery groups={groups} variant="store" onUpdate={onUpdate} busy={busy} />
             </div>
-            {picturesOnly.rest.map((group) => (
-              <PreviewImageBand key={group.category} group={group} onUpdate={onUpdate} busy={busy} />
-            ))}
           </div>
         ))}
 
