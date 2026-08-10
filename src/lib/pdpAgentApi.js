@@ -20,6 +20,20 @@
 // stage. `questions` is empty when the call failed; init still succeeds and the
 // audit still runs.
 //
+// It also returns `product_title` — the product's own name, and the ONE thing the
+// response says about what was read. Null when it could not be determined, which is
+// an ordinary state and not an error. The header shows it: on the capture path the
+// founder never typed a title, and the thread is immutable, so it is their only
+// confirmation the right page was captured.
+//
+// That same call is the GUARDRAIL on the page-scrape path. A link that reads fine
+// but turns out to be a category page, a blog post or a brand home page is refused
+// with a 422 `NotAProductPageError` rather than audited as one product — distinct
+// from the 502 that means the page could not be read at all, where retrying is fair
+// advice. Its message is already written for a founder, so `friendlyInitError`
+// passes it straight through. Send them back to the URL field, and use a NEW
+// thread_id for the corrected link: the rejected one has already been opened.
+//
 // The answers go back on the FIRST /stream turn as `gap_answers`, positionally
 // aligned with that list. Answering is OPTIONAL: an inner `[]` skips one question,
 // and an all-empty submission is still a real turn that runs the audit. It is the
@@ -47,6 +61,12 @@
 //        Authoritative end-of-turn snapshot. EACH is null when that specialist did
 //        not run this turn — null means UNCHANGED, never "clear it".
 //
+//        The Studio's two keys were `studio_content` / `studio_image_sets` between
+//        2026-08-03 and 2026-08-05, named for the specialist that writes them the
+//        way `audit` / `strategy` / `scout` already are. Reverted to the bare names
+//        to keep an already-integrated client working. The backend's own field and
+//        schema names did NOT move back — this is the wire only.
+//
 //        `audit`    `{ html }` — every area audited so far, composed into ONE
 //                   rendered page. Replaced whole, so a receiver that missed a
 //                   progress webhook loses nothing.
@@ -60,26 +80,46 @@
 //                   markdown source rides beside it, so the two can no longer
 //                   disagree about which document this is. Replaced whole.
 //
-//        `scout`    `{ analysis, html, queries, product_count }`. One document,
-//                   replaced whole like the strategy — a run maps the field as it
-//                   stands TODAY, so there is nothing to merge into. `html` is
-//                   built SERVER-SIDE IN PYTHON, not composed by a model, so it
-//                   cannot arrive half-rendered and needs no fallback rendering
-//                   here. `analysis` rides along because the backend's own CMO and
-//                   Strategist read it as text; it is not a second view of the page.
+//        `scout`    `{ html }` — the competitor field as ONE page. Replaced whole
+//                   like the strategy: a run maps the field as it stands TODAY, so
+//                   there is nothing to merge into. Built SERVER-SIDE IN PYTHON,
+//                   not composed by a model, so it cannot arrive half-rendered and
+//                   needs no fallback rendering here — which is also why every
+//                   figure on it is computed rather than typed.
 //
-//        `content`  the page's WORDS — the Studio's text artifact. A CONTAINER
-//                   with one nullable side per platform: `amazon` (a fixed form —
-//                   title, bullets, A+ modules, attributes) or `generic` (just
-//                   `blocks`, an ordered list where the order IS the page order).
-//                   Exactly one is ever populated, so read whichever is non-null
-//                   rather than branching on the platform. Replaced whole.
+//                   It carried `{ analysis, queries, product_count }` too until
+//                   2026-08-03, and nothing here read any of them: `analysis` is
+//                   read by the backend's own CMO and Strategist as a text digest,
+//                   from state, and the builder had already rendered it into the
+//                   page. Now `{html}` like the audit, the strategy, and the Meta
+//                   Ad competitor lens this specialist mirrors.
 //
-//                   A generic block is `{ field, label, kind, text, items, pairs,
-//                   blocks }` and `kind` names which ONE slot is filled: 'str' →
-//                   text, 'list' → items, 'pairs' → pairs, 'dict' → blocks. Only
-//                   'dict' nests, and it nests without limit — so rendering it
-//                   means one recursive component, not a fixed depth.
+//        `content`  the DRAFT PAGE — the Studio's text artifact, `{html}` since
+//                   2026-08-07. ONE self-contained document: the copy, its layout
+//                   and its picture references together, styled as the storefront
+//                   the product sells on. Replaced whole. Render it in an iframe
+//                   sandboxed WITHOUT scripts — it is model-written, carries all
+//                   its CSS inline and runs nothing.
+//
+//                   It was a container with one nullable side per platform until
+//                   then — `amazon` (a fixed form) or `generic` (a recursive
+//                   `blocks` tree) — and this file laid the page out from those
+//                   fields. Both are gone.
+//
+//                   ITS PICTURES ARE REFERENCES, AND YOU RESOLVE THEM. An `<img>`
+//                   whose src is `pdp-image:SET/SLOT` names one picture; any
+//                   element carrying `data-pdp-gallery="SET"` (or "all") is a
+//                   REGION to replace with every picture in that set. Both resolve
+//                   against `image_sets` below — see `resolveContentHtml` in
+//                   `PdpAgentScreen.jsx`, which is the twin of the backend's own
+//                   resolver.
+//
+//                   RE-RESOLVE WHENEVER EITHER SIDE MOVES. A gallery region fills
+//                   from whatever its set holds right now, so a picture arriving on
+//                   `pdp.studio.image` must appear on the page immediately — with
+//                   no new `content` payload. That is the whole reason the page
+//                   ships unresolved, and it is also what keeps a generated
+//                   picture's base64 off this frame: it rides `image_sets` once.
 //
 //        `image_sets` the page's PICTURES — `{ sets: [...] }`. A set is a group
 //                   sharing a `category` and an `aspect_ratio`; a slot is one
@@ -131,15 +171,18 @@
 //     'pdp.audit.tool_call'   { tool_name, args }  (before the area runs)
 //     'pdp.audit.<area>'      { area }             (ONE area landed; never batched
 //                                                   — the areas finish far apart)
-//   <area> is one of the four audit field names: seo, aeo, images, layout, and it
-//   names itself in `data.area`, so a fifth area needs no change on this side.
+//   <area> is one of seo, aeo, images, layout — and it names itself in `data.area`,
+//   so a fifth area needs no change on this side. These are WIRE values, not the
+//   backend's own field names: its state fields and tools are `audit_seo` etc., and
+//   the prefix is stripped on the way out (reverted 2026-08-05). Key off what
+//   arrives, never off what the backend calls it internally.
 //
 //   This is a PROGRESS EVENT and carries no audit content. The areas finish
 //   minutes apart, so an area landing is worth showing long before the page exists
 //   — but what it produced stays server-side, and the composed page arrives on the
 //   `done` frame. Use it for the activity feed and a "N of 4" line, nothing more.
 //   Scout — fired by /stream:
-//     'pdp.scout.report'      { scout: {…} }        (the field landed)
+//     'pdp.scout.report'      { scout: { html } }   (the field landed)
 //   ONE stage, not a per-step pipeline like the Meta Ad lens's: the Scout produces
 //   ONE artifact, so there is nothing to stagger. Its `data.scout` IS the `done`
 //   frame's `scout` value, so the same handler serves both — and because a Scout
@@ -147,7 +190,7 @@
 //   Studio — fired by /stream:
 //     'pdp.studio.tool_call'  { tool_name, args }   (before the work runs)
 //     'pdp.studio.content'    { content: {…} }      (the page's words landed)
-//     'pdp.studio.image'      { image_sets: {…} }   (ONE picture, as it is made)
+//     'pdp.studio.image'      { image_sets: {…} }    (ONE picture, as made)
 //   TWO completion stages because the two artifacts land differently: the content
 //   arrives whole in one call, while the pictures arrive ONE AT A TIME over several
 //   minutes — which is the whole reason to subscribe rather than wait for `done`.
@@ -185,7 +228,8 @@ async function errorMessageFrom(res, fallback) {
  * `image_urls`) on the raw input path. JSON.stringify drops undefined values, so
  * the other path's fields are simply absent rather than sent as null.
  *
- * Returns `{ thread_id, path, platform, ai_message, questions }`. This call is slow
+ * Returns `{ thread_id, path, platform, product_title, ai_message, questions }`.
+ * This call is slow
  * twice over — a blocking page read, then the gap analysis on top of it — so pass a
  * `webhook_request` and show the intake stages.
  */

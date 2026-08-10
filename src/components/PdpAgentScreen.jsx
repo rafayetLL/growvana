@@ -63,21 +63,52 @@ function useSplit(initial = 460, min = 360, max = 720) {
   return [w, onDown];
 }
 
-// The four audit areas, in the backend roster's order, each with the question it
-// answers. The area key IS the state field name, the webhook stage suffix and the
-// key inside every payload — one vocabulary end to end. An area the backend adds
+// The four audit areas, in the backend roster's order. A key IS the `pdp.audit.<area>`
+// stage suffix and the value in that payload's `data.area`. An area the backend adds
 // before this list does still renders: the report unions whatever keys arrive.
 //
-// The labels are the backend's `AUDIT_AREA_LABELS` verbatim, NOT derived from the
-// key. Two of the four are initialisms and no underscore-swap survives them —
-// `humanize('seo')` gives "Seo", which is the whole reason that map exists.
-const AUDIT_AREAS = [
-  { key: 'seo', label: 'SEO', question: 'Will search surface this page' },
-  { key: 'aeo', label: 'AEO', question: 'Will an answer engine understand, trust and cite it' },
-  { key: 'images', label: 'Images', question: 'Do the product images do their job' },
-  { key: 'layout', label: 'Layout', question: 'Does the order of the page hook a buyer and build toward the sale' },
-];
-const AREA_BY_KEY = Object.fromEntries(AUDIT_AREAS.map((a) => [a.key, a]));
+// Nothing on this side reads a key by hand: `auditAreas` is a Set of whatever the
+// webhooks announce and the progress line counts it against this roster's SIZE, so
+// the keys only have to MATCH THE WIRE, never be understood.
+//
+// **THESE ARE WIRE VALUES, NOT THE BACKEND'S FIELD NAMES — they deliberately differ**
+// (2026-08-05). The backend's state fields, audit tools and `AUDIT_AREA_LABELS` are
+// all `audit_seo` / `audit_aeo` / …; its webhook dispatcher strips the `audit_`
+// prefix on the way out, so what actually arrives here is `seo` / `aeo` / `images` /
+// `layout`. This roster keys on what ARRIVES. Do not "fix" it back to match the
+// backend constant — that would silently stop every area matching, and because the
+// report unions whatever keys arrive, the page would still render while the progress
+// count sat at 0 of 4. See the un-revert checklist in `CLAUDE.md`.
+//
+// The labels are the backend's `AUDIT_AREA_LABELS` values verbatim. Never
+// `humanize(key)`: two of the four are initialisms that no mechanical underscore-swap
+// survives — which is the whole reason that map exists.
+const AUDIT_AREAS = {
+  seo: 'SEO',
+  aeo: 'AEO',
+  images: 'Images',
+  layout: 'Layout',
+};
+
+// The areas that can run at all when nothing is PUBLISHED — the raw input path,
+// where the founder described a product they have not launched. SEO, AEO and
+// Layout each judge a live page and there is none, so the backend never even binds
+// their tools on that path; only the photographs are audited, and only when the
+// founder supplied any.
+//
+// **This mirrors `NO_PAGE_AREAS` in the backend's `utils/pdp/pdp_context_formatter.py`
+// — change one, check the other.** It is duplicated rather than sent over the wire
+// because nothing on the wire carries it, and the only thing it drives here is the
+// denominator of the progress line. Keyed on the WIRE values like the roster above.
+const NO_PAGE_AREAS = ['images'];
+
+// How many areas this thread can ever have, which is the progress line's
+// denominator. Zero means nothing can be audited at all — no page and no
+// photograph — and the Auditor is never routed on such a thread.
+const auditAreaCount = (path, hasImages) => {
+  if (path !== 'raw_input') return Object.keys(AUDIT_AREAS).length;
+  return hasImages ? NO_PAGE_AREAS.length : 0;
+};
 
 // The fixed specialist arc. ALL FOUR are built now — the Studio was the last, and
 // it is the only one that MAKES something rather than describing it.
@@ -221,6 +252,336 @@ function versionSrc(version) {
   return version.url || version.data_uri || null;
 }
 
+// ---------------------------------------------------------------------------
+// The content page's picture references
+// ---------------------------------------------------------------------------
+//
+// `done.content` is ONE HTML document written by the model, and its pictures are
+// REFERENCES rather than bytes — a generated take exists only as base64 on its
+// version, which no model can emit, and a merchant URL may have expired. Two forms:
+//
+//     <img src="pdp-image:SET/SLOT">        ONE picture, wherever the copy wants it
+//     <div data-pdp-gallery="SET">          a REGION that fills with the whole set
+//     <div data-pdp-gallery="all">          …or with every set
+//
+// The gallery form is what makes the image set VARIABLE: the Studio adds pictures
+// to a set turn after turn, and a region grows to hold them with no content
+// rewrite. That is why the page ships unresolved — resolving server-side would
+// freeze a gallery at the moment it was written AND duplicate every generated
+// picture's base64 onto a frame that already carries it once in `image_sets`.
+//
+// CHANGE ONE, CHECK THE OTHER: `growvana-ai-backend`'s
+// `utils/pdp/pdp_content_images.py` is the same resolver in Python, for the PNG
+// that models look at. It shares the scheme string, the attribute name, the `all`
+// sentinel and the shape of an expanded item.
+//
+// **It differs from that one on purpose in exactly one way: TAKES.** Python shows
+// the current take alone, badged `AI · v3 of 3`, because its reader is deciding
+// whether to route the Studio and two superseded pictures per slot settle nothing.
+// This one shows the current take PLUS a strip of the earlier ones, because its
+// reader is the founder, who is deciding whether the regenerated picture beat the
+// one it replaced — and `StudioView` has shown every take by default since the
+// lineage landed. A single-take slot renders no strip in either.
+//
+// **The switching is pure CSS — a hidden radio per take and a `:checked ~` rule.**
+// It has to be: this renders inside a sandboxed iframe with NO `allow-scripts`,
+// because the document is model-written and this workspace only grants script to
+// the Python-built Scout page. Clicking a take PREVIEWS it; it does not promote it.
+// Versions are append-only and the newest one is the page, and there is no
+// chosen-version field on the backend to set.
+const PDP_IMAGE_SCHEME = 'pdp-image:';
+const GALLERY_ATTR = 'data-pdp-gallery';
+const GALLERY_ALL = 'all';
+
+// Every class this injects is prefixed `gvx-`, and both content prompts forbid the
+// model from using that prefix — which is what keeps our chrome from being restyled
+// by the page it is injected into, and the page from being restyled by us.
+const GVX = 'gvx';
+
+const IMG_REF_RE = new RegExp(
+  `src\\s*=\\s*(["'])${PDP_IMAGE_SCHEME}([^"']*)\\1`,
+  'gi',
+);
+const GALLERY_RE = new RegExp(
+  `<([a-zA-Z][\\w-]*)\\b[^>]*?${GALLERY_ATTR}\\s*=\\s*(["'])([^"']*)\\2[^>]*>(?:[\\s\\S]*?<\\/\\1\\s*>)?`,
+  'gi',
+);
+
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// `existing` vs anything else, in the founder's words — the same two labels
+// `SourceBadge` uses, so the page and the picture panel agree.
+function originLabel(version) {
+  return version?.source === 'existing' ? 'Existing' : 'AI';
+}
+
+// The source, ON the thumbnail. Whether a picture is the founder's own or one the
+// Studio made is the first thing they need from a gallery, and it was previously
+// only legible in the caption of whichever slot happened to be selected — so
+// telling AI from existing meant clicking through every thumbnail in turn.
+//
+// A full-width ribbon rather than a corner chip: at this size a chip is a smudge,
+// while a ribbon reads at a glance and never covers the middle of the picture.
+// Two tones as well as two words, so the distinction survives being skimmed.
+function sourceRibbon(version) {
+  if (!version) return '';
+  const existing = version.source === 'existing';
+  return `<span class="${GVX}-ribbon${existing ? ` ${GVX}-ribbon--was` : ''}">${
+    existing ? 'Existing' : 'AI'
+  }</span>`;
+}
+
+function takeBadge(version, takes) {
+  let badge = originLabel(version);
+  if (takes > 1 || version?.source !== 'existing') badge += ` · v${version?.version}`;
+  if (takes > 1) badge += ` of ${takes}`;
+  return badge;
+}
+
+// One gallery item: every showable take, the newest visible, the rest one click
+// away. `uid` makes the radio group and the ids unique across the whole document.
+function figureMarkup(set, slot, uid) {
+  const takes = (slot.versions || [])
+    .slice()
+    .sort((a, b) => a.version - b.version)
+    .filter((v) => versionSrc(v));
+  if (!takes.length) return { html: '', css: '' };
+
+  const current = takes[takes.length - 1];
+  const group = `${GVX}-g-${uid}`;
+  const rules = [];
+  const radios = takes
+    .map((v, i) => {
+      const id = `${GVX}-r-${uid}-${i}`;
+      // nth-child is 1-based, and every list below is rendered in this same order.
+      const n = i + 1;
+      rules.push(
+        `#${id}:checked~.${GVX}-stage .${GVX}-take:nth-child(${n}){display:block}`,
+        `#${id}:checked~.${GVX}-caps .${GVX}-cap:nth-child(${n}){display:block}`,
+        `#${id}:checked~.${GVX}-strip label:nth-child(${n}){outline:2px solid #111;outline-offset:1px}`,
+      );
+      return `<input type="radio" name="${group}" id="${id}" class="${GVX}-pick"${
+        v === current ? ' checked' : ''
+      }>`;
+    })
+    .join('');
+
+  const stage = takes
+    .map(
+      (v) =>
+        `<img class="${GVX}-take" src="${esc(versionSrc(v))}" alt="${esc(v.alt_text)}">`,
+    )
+    .join('');
+
+  const caps = takes
+    .map((v) => {
+      const bits = [
+        `<span class="${GVX}-badge">${esc(takeBadge(v, takes.length))}</span>`,
+      ];
+      if (slot.label) bits.push(`<span class="${GVX}-job">${esc(slot.label)}</span>`);
+      let cap = `<figcaption class="${GVX}-cap">${bits.join('')}`;
+      if (v.justification) cap += `<div class="${GVX}-why">${esc(v.justification)}</div>`;
+      // Alt text is NOT shown here (2026-08-07). It stays the img's real `alt`
+      // attribute, which is where it does its job, and it stays visible AND
+      // copyable in Pictures mode, which is the view for working through the
+      // artifact field by field. On the page it was a third line under every
+      // picture restating what the reader can already see, and this view exists
+      // to show the founder their LISTING rather than an inventory of it.
+      return `${cap}</figcaption>`;
+    })
+    .join('');
+
+  // Only rendered when there is genuinely something to compare — a single-take
+  // slot gets no strip at all, exactly as `VersionStrip` behaves.
+  const strip =
+    takes.length > 1
+      ? `<div class="${GVX}-strip">${takes
+          .map(
+            (v, i) =>
+              `<label for="${GVX}-r-${uid}-${i}" title="${esc(
+                takeBadge(v, takes.length),
+              )}"><img src="${esc(versionSrc(v))}" alt="">${sourceRibbon(v)}</label>`,
+          )
+          .join('')}</div>`
+      : '';
+
+  return {
+    html: `<figure class="${GVX}-shot">${radios}<div class="${GVX}-stage">${stage}</div><div class="${GVX}-caps">${caps}</div>${strip}</figure>`,
+    css: rules.join(''),
+  };
+}
+
+// A gallery is a THUMBNAIL RAIL selecting ONE large picture, not a contact sheet.
+// The grid this replaced showed every slot at equal size, which is what a review
+// tool looks like rather than what a product page looks like — and the founder is
+// judging whether their listing works, so the gallery has to behave like the
+// gallery a shopper will actually use.
+//
+// TWO levels of selection, and they nest rather than compete: the RAIL picks which
+// slot is on the stage, and each slot keeps its own version strip picking which
+// TAKE of that slot is shown. Both are pure CSS `:checked ~` sibling rules, because
+// this document is model-written and therefore runs no script (see `HtmlDoc`).
+//
+// `variant` follows the page it sits in — the same rule the whole preview follows.
+// Amazon stacks its rail down the left of the stage; a storefront puts its
+// thumbnails under the picture, which `--store` does by reversing the column.
+function galleryMarkup(sets, seed, variant = 'amazon') {
+  const parts = [];
+  const rules = [];
+  let uid = seed;
+  // How many sets share each category, which decides whether the heading needs the
+  // SHAPE to stay unambiguous. One category legitimately spans several sets — a
+  // gallery whose photographs are not all the same shape is one gallery across one
+  // set per shape — so naming the category alone would print "Gallery" twice with
+  // nothing to say why, which reads as a bug rather than as a fact about the
+  // founder's own photographs.
+  const perCategory = new Map();
+  for (const set of sets) {
+    const name = (set.category || set.set_key || '').trim();
+    perCategory.set(name, (perCategory.get(name) || 0) + 1);
+  }
+  for (const set of sets) {
+    const gid = `${GVX}-s-${uid}`;
+    uid += 1;
+    const inputs = [];
+    const thumbs = [];
+    const panels = [];
+    for (const slot of set.slots || []) {
+      const { html, css } = figureMarkup(set, slot, uid);
+      uid += 1;
+      // A slot whose every take lacks bytes renders nothing, and must not take an
+      // index with it — `nth-child` counts what is ACTUALLY emitted, so the
+      // index is taken from the rendered list rather than from the loop.
+      if (!html) continue;
+      const i = panels.length;
+      const id = `${gid}-${i}`;
+      const n = i + 1;
+      inputs.push(
+        `<input type="radio" name="${gid}" id="${id}" class="${GVX}-pick"${
+          i === 0 ? ' checked' : ''
+        }>`,
+      );
+      rules.push(
+        `#${id}:checked~.${GVX}-main .${GVX}-panel:nth-child(${n}){display:block}`,
+        `#${id}:checked~.${GVX}-rail label:nth-child(${n}){outline:2px solid #111;outline-offset:1px}`,
+        css,
+      );
+      thumbs.push(
+        `<label for="${id}"><img src="${esc(
+          versionSrc(currentVersion(slot)),
+        )}" alt="">${sourceRibbon(currentVersion(slot))}</label>`,
+      );
+      panels.push(`<div class="${GVX}-panel">${html}</div>`);
+    }
+    if (!panels.length) continue;
+    // ALWAYS named, where this used to appear only when a region held more than one
+    // set. A founder looking at a rail of sixteen photographs needs to know what
+    // KIND of pictures they are — the gallery, the benefit graphics, a comparison
+    // chart — and on a single-set region that label was simply absent.
+    const name = (set.category || set.set_key || '').trim();
+    if (name) {
+      const shape =
+        perCategory.get(name) > 1 && set.aspect_ratio
+          ? `<span class="${GVX}-shape">${esc(set.aspect_ratio)}</span>`
+          : '';
+      parts.push(
+        `<div class="${GVX}-setname">${esc(name)}<span class="${GVX}-count">${
+          panels.length
+        }</span>${shape}</div>`,
+      );
+    }
+    // One picture needs no rail to choose between — the panel stands alone, and a
+    // single-thumbnail rail would read as a control that does nothing.
+    const rail =
+      thumbs.length > 1 ? `<div class="${GVX}-rail">${thumbs.join('')}</div>` : '';
+    parts.push(
+      `<div class="${GVX}-gal ${GVX}-gal--${variant}">${inputs.join(
+        '',
+      )}${rail}<div class="${GVX}-main">${panels.join('')}</div></div>`,
+    );
+  }
+  if (!parts.length) return { html: '', css: '', next: uid };
+  return { html: parts.join(''), css: rules.join(''), next: uid };
+}
+
+// Our own chrome. Neutral black/white/grey and never a brand colour — a mint chip
+// in the corner of an Amazon gallery is what stops the preview reading as the page
+// it is previewing. That is the same call `SourceBadge` and `VersionStrip` make.
+const GVX_BASE_CSS = `
+.${GVX}-gal{display:flex;gap:14px;margin:16px 0;align-items:flex-start}
+.${GVX}-gal--store{flex-direction:column-reverse;align-items:stretch}
+.${GVX}-rail{display:flex;flex-direction:column;gap:8px;flex:0 0 auto;max-height:520px;overflow-y:auto;overflow-x:hidden;padding:2px 6px 2px 2px}
+.${GVX}-gal--store .${GVX}-rail{flex-direction:row;flex-wrap:nowrap;max-height:none;overflow-x:auto;overflow-y:hidden;padding:2px}
+.${GVX}-rail label{display:block;position:relative;flex:0 0 auto;width:72px;height:72px;border-radius:8px;overflow:hidden;cursor:pointer;border:1px solid rgba(0,0,0,.15);background:#fff}
+.${GVX}-rail img{width:100%;height:100%;object-fit:contain;display:block}
+.${GVX}-ribbon{position:absolute;left:0;right:0;bottom:0;padding:1px 0;text-align:center;font:700 7px/1.5 ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:#fff;background:rgba(17,17,17,.82)}
+.${GVX}-ribbon--was{background:rgba(90,98,110,.82)}
+.${GVX}-main{flex:1 1 auto;min-width:0}
+.${GVX}-panel{display:none}
+.${GVX}-panel .${GVX}-take{max-height:420px;object-fit:contain}
+.${GVX}-setname{display:flex;align-items:center;gap:6px;margin:14px 0 0;font:700 10px/1.4 ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:#6b7280}
+.${GVX}-count{padding:0 5px;border-radius:999px;background:rgba(17,17,17,.07);color:#4b5563;font-size:9px;letter-spacing:.02em}
+.${GVX}-shape{color:#9ca3af;font-weight:600;letter-spacing:.02em;text-transform:none}
+.${GVX}-shot{margin:0;position:relative}
+.${GVX}-pick{position:absolute;width:0;height:0;opacity:0;pointer-events:none}
+.${GVX}-stage{position:relative}
+.${GVX}-take{display:none;width:100%;height:auto;border-radius:6px;background:#fff;border:1px solid rgba(0,0,0,.08)}
+.${GVX}-cap{display:none;margin-top:6px;font:11px/1.45 ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;color:#4b5563}
+.${GVX}-badge{display:inline-block;padding:1px 6px;border-radius:999px;background:#111;color:#fff;font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;vertical-align:middle}
+.${GVX}-job{margin-left:6px;font-weight:600;color:#111}
+.${GVX}-why{margin-top:3px;color:#6b7280}
+.${GVX}-alt{margin-top:2px;color:#9ca3af}
+.${GVX}-strip{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.${GVX}-strip label{display:block;position:relative;width:56px;height:56px;border-radius:6px;overflow:hidden;cursor:pointer;border:1px solid rgba(0,0,0,.12);background:#fff}
+.${GVX}-strip img{width:100%;height:100%;object-fit:cover;display:block}
+`;
+
+// The page with every picture reference turned into real pictures.
+//
+// Fail-soft both ways, matching the Python side: an `<img>` naming a slot that does
+// not exist keeps its placeholder src (one broken image, not a lost page), and a
+// region naming an unknown set collapses to nothing.
+function resolveContentHtml(html, imageSets, variant = 'amazon') {
+  if (!html) return html;
+  const sets = imageSets?.sets || [];
+  const byKey = new Map(sets.map((s) => [s.set_key, s]));
+  const rules = [GVX_BASE_CSS];
+  let uid = 0;
+
+  let out = html.replace(IMG_REF_RE, (whole, quote, token) => {
+    const [setKey, slotKey] = String(token).trim().split('/');
+    const set = byKey.get((setKey || '').trim());
+    const slot = (set?.slots || []).find((s) => s.slot_key === (slotKey || '').trim());
+    const src = versionSrc(currentVersion(slot));
+    return src ? `src=${quote}${esc(src)}${quote}` : whole;
+  });
+
+  out = out.replace(GALLERY_RE, (whole, _tag, _q, key) => {
+    const wanted = String(key).trim();
+    const chosen =
+      wanted === GALLERY_ALL ? sets : byKey.has(wanted) ? [byKey.get(wanted)] : [];
+    if (!chosen.length) return '';
+    const { html: markup, css, next } = galleryMarkup(chosen, uid, variant);
+    uid = next;
+    if (css) rules.push(css);
+    return markup;
+  });
+
+  // Injected LAST so our rules win over anything the model wrote, and inside the
+  // head where there is one — a <style> in the body is valid but pushes the first
+  // paint around in some engines.
+  const style = `<style>${rules.join('')}</style>`;
+  return out.includes('</head>')
+    ? out.replace('</head>', `${style}</head>`)
+    : style + out;
+}
+
 // Sets grouped by category, preserving first-seen order. One category legitimately
 // spans SEVERAL sets — a gallery whose photographs are not all the same shape is
 // one gallery across one set per shape — so without this a founder sees their
@@ -250,7 +611,7 @@ function setsByCategory(imageSets) {
 // roster still needs no hardcoding here and a fifth area still needs no change.
 //
 // function areaKeys(audit) {
-//   const known = AUDIT_AREAS.map((a) => a.key);
+//   const known = Object.keys(AUDIT_AREAS);
 //   const extra = Object.keys(audit || {}).filter(
 //     (k) => !known.includes(k) && !AUDIT_META_KEYS.has(k),
 //   );
@@ -260,7 +621,7 @@ function setsByCategory(imageSets) {
 const humanize = (key) =>
   String(key).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 
-const areaLabel = (key) => AREA_BY_KEY[key]?.label || humanize(key);
+const areaLabel = (key) => AUDIT_AREAS[key] || humanize(key);
 
 const isHttpUrl = (s) => typeof s === 'string' && /^https?:\/\//i.test(s);
 
@@ -329,6 +690,13 @@ export default function PdpAgentScreen({
   // Map<stage, {message, failed}> from the intake webhooks, so a slow scrape shows
   // what it is doing instead of a blank spinner.
   const [intake, setIntake] = useState({});
+  // The product's name DURING init, held apart from `capture.product_title`
+  // because it arrives on the webhook channel and the two are wanted at different
+  // moments: this one fills the progress panel while init is still running, the
+  // other fills the header for the rest of the thread's life. Null on the PDF
+  // route and the no-account route, which carry no webhook config at all — the
+  // panel simply shows no name there, as it already shows no live steps.
+  const [intakeTitle, setIntakeTitle] = useState(null);
 
   // What was actually captured — shown back before any audit runs, so a founder
   // can tell the tool read the right page.
@@ -389,8 +757,9 @@ export default function PdpAgentScreen({
   // The competitor field. Replaced whole on every Scout run, like the strategy and
   // unlike the audit: a run maps the field as it stands today, and half of one run
   // merged into half of another would describe a field that never existed.
-  // `{analysis, html, queries, product_count}` — no `image`, because the Scout
-  // reaches the models as text and the page is built server-side in Python.
+  // `{ html }` — the page and nothing else, as of 2026-08-03. No `image` either,
+  // because the Scout reaches the models as a text digest rather than as a
+  // picture, and the page itself is built server-side in Python.
   const [scout, setScout] = useState(null);
   // The Studio's two artifacts, and they are INDEPENDENT — a turn routinely
   // produces one without the other, so they are two pieces of state rather than
@@ -471,6 +840,10 @@ export default function PdpAgentScreen({
     setInitLoading(true);
     setInitError(null);
     setIntake({});
+    // Cleared with the stages it rides beside. A rejected attempt leaves its name
+    // standing otherwise, and the founder's next try would open under the title of
+    // the page that was just refused.
+    setIntakeTitle(null);
 
     // Which entry this turn uses, decided once and read everywhere below. `/init`
     // needs a Foundation thread — it REQUIRES `foundation_thread_id`, exactly as the
@@ -504,6 +877,23 @@ export default function PdpAgentScreen({
           // the product URL, the image list and whether a screenshot exists reach
           // this screen through `scrape_completed`'s payload or not at all.
           if (stage === 'pdp.intake.scrape_completed' && evt.data) setScrape(evt.data);
+          // The product's NAME, shown in the progress panel so a founder can
+          // confirm the right page was read while the rest of init is still
+          // running — the whole reason it is worth having before the header does.
+          //
+          // TWO sources, and the earlier one is taken as soon as it exists: on
+          // Amazon the parsed listing carries its title on `scrape_completed`,
+          // seconds after the scrape and well before the gap analysis; every path
+          // gets the resolved value on `thread_ready` at the very end. The order
+          // below is not arbitrary — `thread_ready` always arrives last, so its
+          // authoritative value overwrites the early guess rather than losing to
+          // it.
+          if (stage === 'pdp.intake.scrape_completed' && evt.data?.listing?.title) {
+            setIntakeTitle(evt.data.listing.title);
+          }
+          if (stage === 'pdp.intake.thread_ready' && evt.data?.product_title) {
+            setIntakeTitle(evt.data.product_title);
+          }
         })
       : null;
 
@@ -811,6 +1201,10 @@ export default function PdpAgentScreen({
           onBack={onBack}
           phase={phase}
           platform={platform}
+          // The init response IS `capture`, so the title needs no state of its own.
+          // Null whenever init could not name the product, which is an ordinary
+          // state and not an error — the header falls back to the tagline.
+          productTitle={capture?.product_title}
           researching={researching}
           landed={{
             auditor: hasAudit,
@@ -818,8 +1212,10 @@ export default function PdpAgentScreen({
             strategist: Boolean(strategy?.html),
             // Either artifact counts — the Studio genuinely produces one without
             // the other, so requiring both would leave the step unticked on a turn
-            // that only made pictures.
-            studio: Boolean(content?.amazon || content?.generic || imageSets?.sets?.length),
+            // that only made pictures. `content.html` is the whole content artifact
+            // since 2026-08-07; this read `content?.amazon || content?.generic`
+            // until then, which would have left the step permanently dark.
+            studio: Boolean(content?.html || imageSets?.sets?.length),
           }}
           current={canvasSel}
         />
@@ -842,6 +1238,7 @@ export default function PdpAgentScreen({
             initLoading={initLoading}
             initError={initError}
             intake={intake}
+            intakeTitle={intakeTitle}
             onStart={handleStart}
           />
         ) : (
@@ -921,10 +1318,18 @@ export default function PdpAgentScreen({
               <Canvas
                 audit={audit}
                 auditAreas={auditAreas}
+                // How many areas this product can ever have. Four on a published
+                // page; on the raw input path only the photographs, and nothing at
+                // all when the founder supplied none.
+                areaTotal={auditAreaCount(path, cleanedImageUrls.length > 0)}
                 strategy={strategy}
                 scout={scout}
                 content={content}
                 imageSets={imageSets}
+                // The founder's selection, pinned the same way the request builder
+                // pins it: a raw-input thread is always `other`, so no later edit to
+                // the form can dress an unpublished product as an Amazon listing.
+                platform={path === 'raw_input' ? 'other' : platform}
                 canvasSel={canvasSel}
                 onPickCanvas={pickCanvas}
                 running={running}
@@ -943,7 +1348,18 @@ export default function PdpAgentScreen({
 // Header — navy topbar + the four-specialist arc
 // =============================================================
 
-function Header({ onBack, phase, platform, researching, landed, current }) {
+// `productTitle` REPLACES the tagline once a product is on the thread, rather than
+// sitting beside it. The tagline orients someone who has not started yet; once they
+// have, the only question this line can answer that nothing else on screen does is
+// WHICH product they are looking at — a thread covers exactly one, its inputs are
+// immutable, and on the capture path the founder never typed a title, so this is
+// their only confirmation the right page was read.
+//
+// It truncates rather than wraps: the header is a fixed `h-16` and an Amazon title
+// runs well past 75 characters, so an unclamped one would either break the row or
+// push the arc stepper off it. The full string stays available on hover through
+// `title`, which is also what a screen reader announces.
+function Header({ onBack, phase, platform, productTitle, researching, landed, current }) {
   return (
     <header className="h-16 px-6 flex items-center gap-4 bg-navy-900 text-white shrink-0">
       {onBack && (
@@ -961,11 +1377,22 @@ function Header({ onBack, phase, platform, researching, landed, current }) {
       <div className="h-9 w-9 rounded-xl bg-mint-500 grid place-items-center text-navy-900 shrink-0">
         <IconCompass width={18} height={18} />
       </div>
-      <div className="leading-tight">
+      {/* `min-w-0` is what makes the truncate below actually clamp — without it a
+          flex item refuses to shrink past its content and the long title wins. */}
+      <div className="leading-tight min-w-0">
         <div className="font-display text-[18px] font-semibold text-white">PDP Agent</div>
-        <div className="text-[11.5px] text-navy-200">
-          Find what stands between your product page and a winning one
-        </div>
+        {productTitle ? (
+          <div
+            className="text-[11.5px] text-navy-200 truncate max-w-[46ch]"
+            title={productTitle}
+          >
+            {productTitle}
+          </div>
+        ) : (
+          <div className="text-[11.5px] text-navy-200">
+            Find what stands between your product page and a winning one
+          </div>
+        )}
       </div>
 
       <div className="ml-auto">
@@ -1056,7 +1483,7 @@ function SetupView({
   // `setFoundationId`, `hasProjectFoundation`. Restore them together with the
   // state and the `Field` below.
   pdfFile, setPdfFile, hasFoundation,
-  initLoading, initError, intake, onStart,
+  initLoading, initError, intake, intakeTitle, onStart,
 }) {
   function updateImageAt(i, val) {
     setImageUrls((prev) => prev.map((v, idx) => (idx === i ? val : v)));
@@ -1259,7 +1686,12 @@ function SetupView({
             multipart entry — and that one carries no webhook config. Same
             condition `handleStart` routes on, kept in step with it. */}
         {initLoading && (
-          <IntakeProgress path={path} intake={intake} withWebhooks={!pdfFile && hasFoundation} />
+          <IntakeProgress
+            path={path}
+            intake={intake}
+            title={intakeTitle}
+            withWebhooks={!pdfFile && hasFoundation}
+          />
         )}
 
         <div className="mt-5 flex justify-end">
@@ -1285,7 +1717,7 @@ function SetupView({
 // intake webhooks say what is happening; without a webhook receiver configured (or
 // on the PDF route, which carries none) this still names the step rather than
 // showing nothing.
-function IntakeProgress({ path, intake, withWebhooks }) {
+function IntakeProgress({ path, intake, title, withWebhooks }) {
   const started = !!intake['pdp.intake.scrape_started'];
   const scraped = intake['pdp.intake.scrape_completed'];
   const asking = intake['pdp.intake.gap_questions_started'];
@@ -1316,6 +1748,25 @@ function IntakeProgress({ path, intake, withWebhooks }) {
       <div className="text-[11px] tracking-wider uppercase text-navy-400 dark:text-slate-500 font-semibold">
         Progress
       </div>
+      {/* The name of what is being read, as soon as anything knows it. This is the
+          one moment a founder can still tell they pasted the wrong link and act on
+          it — once init returns, the thread is immutable and correcting it means
+          starting over.
+
+          It WRAPS here, unlike the header's copy of it: this is a card that grows,
+          not a fixed-height row, and a truncated Amazon title is exactly the case
+          where the distinguishing words sit at the end. Capped at three lines so a
+          long one cannot push the steps out of view. */}
+      {title && (
+        <div className="mt-2 rounded-lg bg-navy-50 dark:bg-slate-800/60 px-3 py-2">
+          <div className="text-[10.5px] tracking-wider uppercase text-navy-400 dark:text-slate-500 font-semibold">
+            Product
+          </div>
+          <div className="mt-0.5 text-[13px] font-medium text-navy-900 dark:text-slate-100 leading-snug line-clamp-3 break-words">
+            {title}
+          </div>
+        </div>
+      )}
       <ol className="mt-2 divide-y divide-navy-100 dark:divide-slate-800">
         {steps.map((s) => (
           <li key={s.label} className="flex items-start gap-3 py-2.5">
@@ -1428,7 +1879,12 @@ function Field({ label, children }) {
 // =============================================================
 
 function Canvas({
-  audit, auditAreas, strategy, scout, content, imageSets, canvasSel, onPickCanvas,
+  audit, auditAreas, areaTotal, strategy, scout, content, imageSets, canvasSel, onPickCanvas,
+  // Which storefront this product sells on. Only `StudioView` reads it, and only to
+  // pick the gallery's shape — Amazon rails its thumbnails down the left of the
+  // stage, a storefront puts them underneath. Destructured rather than reached for,
+  // for the reason stated below.
+  platform,
   // Which specialists are working and what each is doing, keyed by tab key. Replaces
   // the single `researching` boolean that used to be forwarded to all four views —
   // see `CanvasEmpty`.
@@ -1478,7 +1934,7 @@ function Canvas({
             `running[key]` is truthy only while that node is working, and its value
             is that node's live status line. */}
         {canvasSel === 'auditor' ? (
-          <AuditView audit={audit} areas={auditAreas} note={running?.auditor} />
+          <AuditView audit={audit} areas={auditAreas} areaTotal={areaTotal} note={running?.auditor} />
         ) : canvasSel === 'scout' ? (
           <ScoutView scout={scout} note={running?.scout} />
         ) : canvasSel === 'strategist' ? (
@@ -1490,6 +1946,7 @@ function Canvas({
             note={running?.studio}
             onUpdate={onUpdate}
             busy={busy}
+            platform={platform}
           />
         ) : (
           <SpecialistStub sel={canvasSel} />
@@ -1826,8 +2283,11 @@ function StrategyView({ strategy, note }) {
 // every figure on it is computed rather than typed. There is no render call to
 // fail here at all, where the other two have one that can.
 //
-// `scout.analysis` still rides the wire — it is what the CMO and the Strategist
-// read as a text digest — it simply is not a second rendering of this page.
+// `done.scout` is now `{html}` and nothing else (2026-08-03), so this really is
+// the whole payload rather than one field picked out of four. `analysis` used to
+// ride along and no longer does: the CMO and the Strategist read it as a text
+// digest on the BACKEND, from state, so it never needed to reach this screen —
+// and the builder had already rendered it into the page above.
 function ScoutView({ scout, note }) {
   const html = scout?.html;
 
@@ -1980,10 +2440,38 @@ function ContentBlock({ block, depth = 0 }) {
   );
 }
 
+// =========================================================================
+// RETIRED 2026-08-07 — the content-schema renderers. Nothing reaches these.
+// =========================================================================
+//
+// `AmazonContent`, `ContentBlock`, `PageSection`, `AmazonPagePreview` and
+// `StorefrontPagePreview` laid out `content.amazon` / `content.generic` — two typed
+// schemas the backend no longer produces. The Studio now writes ONE HTML document,
+// so `StudioView` renders `content.html` in a sandboxed iframe and none of these is
+// called.
+//
+// KEPT, not deleted, because they are the surviving record of two things that are
+// still live requirements and would otherwise have to be re-derived:
+//
+//   1. **The two site palettes** — Amazon's #0F1111 / #565959 / #E7E7E7 / #007185
+//      and the Ember→Arial stack, and the storefront's warm #FBFAF8 / #16161A /
+//      #1F6F5C. Those are now stated in the backend's `prompts/pdp/content.yml`
+//      and mirrored in `utils/pdp/pdp_content_builder.py`. CHANGE ONE, CHECK ALL
+//      THREE.
+//   2. **`SiteFrame`** — still used, and still the seam that makes a light
+//      rectangle in a dark app read as another site rather than as broken.
+//
+// What was LOST with them, stated plainly rather than left to be discovered: the
+// per-field copy buttons. A founder could copy the title, each bullet and each A+
+// module out of "Fields" mode one at a time. There are no fields in an HTML page,
+// so that mode is now "Pictures" and copying the copy means selecting it in the
+// rendered page or opening "View raw HTML". If per-field copying is wanted back,
+// the honest way is a backend pass that extracts labelled spans from the document —
+// not restoring these, which would need the schemas back too.
+//
 // Amazon is a FORM — a fixed field list the seller does not choose — so it renders
 // as labelled fields rather than through the block renderer. That is the same split
-// the backend makes with two schemas and two prompts, and the reason the container
-// carries one nullable side per platform.
+// the backend used to make with two schemas and two prompts.
 function AmazonContent({ amazon }) {
   const attrs = amazon.contextual_attributes || {};
   const contextual = Object.entries(attrs).filter(([, v]) => Array.isArray(v) && v.length);
@@ -2116,6 +2604,31 @@ function AmazonContent({ amazon }) {
 // preview that inverted would stop resembling the page being previewed. `SiteFrame`
 // is what makes that read as deliberate — a browser shell around a light rectangle
 // says "another site", where a bare light panel in a dark app says "broken".
+//
+// ---------------------------------------------------------------
+// THERE IS A SECOND RENDERER OF THIS ARTIFACT. Keep them in step.
+//
+// The backend's `utils/pdp/pdp_content_builder.py` lays the same `PdpContent` out
+// as one self-contained HTML page, in raw HTML and CSS. It was PORTED FROM this
+// view on 2026-08-04 — same two palettes value-for-value, the same `SiteFrame`
+// chrome, the same field-row rhythm, the same schema names as labels, the same
+// "nothing collapses". A change to the look here should be made there too, and the
+// palette constants below are the shared source of truth for both.
+//
+// They serve different readers, and the differences are deliberate, not drift:
+//
+//   this view  — the FOUNDER. Every picture with its version lineage and source
+//                badges, per-field edit boxes, absent fields hidden.
+//   backend    — a MODEL (the CMO, which cannot otherwise say what the draft
+//                holds). No pictures at all — they reach it as text — and absent
+//                fields SHOWN greyed, because "no description" and "a description
+//                I was not shown" are the same silence to a reader that cannot
+//                scroll.
+//
+// The backend page is never shipped here: `PdpContent.wire_payload()` drops its
+// `html` and `image`, because this screen renders the content from the schema and
+// would only be receiving a second, worse rendering of what it already has.
+// ---------------------------------------------------------------
 // =============================================================
 
 // Amazon's own type stack. Ember is theirs and will not resolve here; Arial is what
@@ -2632,6 +3145,20 @@ function AllImagesGallery({ groups, onUpdate, busy, variant = 'amazon' }) {
           )}
         </div>
 
+        {/* Why this picture earns its place. Shown here as well as in Fields because
+            a founder judging the gallery is deciding exactly that — and the label
+            above says what the picture is FOR, never why it is worth keeping.
+            Muted and below the label: it is our annotation, not page content, and
+            this stage is styled as the destination site. */}
+        {!isBlank(shown?.justification) && (
+          <div
+            className="mt-1 text-[12px] leading-relaxed max-w-[70ch]"
+            style={{ color: amz ? '#565959' : STORE_MUTED }}
+          >
+            {shown.justification}
+          </div>
+        )}
+
         {openTakes && (
           <VersionStrip
             takes={takes}
@@ -3047,8 +3574,124 @@ function StorefrontPagePreview({ generic, groups, onUpdate, busy }) {
   );
 }
 
-function StudioView({ content, imageSets, note, onUpdate, busy }) {
-  const page = content?.amazon || content?.generic || null;
+// ONE picture in the Fields view: the take being previewed, everything written about
+// it, and its whole lineage.
+//
+// **This was RENDERED BUT NEVER DEFINED until 2026-08-06**, which is the exact hazard
+// the warning on `Canvas` describes: a component used in JSX but not declared is an
+// UNDECLARED identifier, not an undefined prop, so it throws `ReferenceError` rather
+// than rendering nothing — and the production build cannot catch it. The whole
+// "Your pictures" panel white-screened the moment a thread had one picture in it.
+//
+// Four things describe a picture and this shows all four, because the Fields view is
+// the COMPLETE accounting — that is the whole reason it exists beside Page mode:
+//
+//   - `slot.label`         — the JOB it does on the page ("hero", "in-scale shot")
+//   - `justification`      — WHY it earns a place, and the one thing in the frame
+//                            that does it. On an existing photograph this is the
+//                            Images audit's own read, copied at seed time; on a
+//                            generated one it is what the Studio said it was for.
+//                            `SourceBadge` beside it is what says which.
+//   - `alt_text`           — what is IN it, and the one field here a founder COPIES
+//                            rather than reads, so it gets a copy button
+//   - `direction`          — what the renderer was asked for. Generated takes only:
+//                            an existing photograph was never directed
+//
+// Styled in the app's own palette, unlike Page mode — this view is ours, not a
+// simulation of the destination site.
+function ImageSlotCard({ slot, ratio, setKey, onUpdate, busy }) {
+  // Newest LAST, and the newest IS the page — versions are append-only and there is
+  // no chosen-version field on the backend, so this previews and never selects.
+  const takes = (slot?.versions || []).filter((v) => versionSrc(v));
+  const [at, setAt] = useState(null);
+  if (!takes.length) return null;
+
+  const idx = at == null ? takes.length - 1 : Math.min(at, takes.length - 1);
+  const shown = takes[idx];
+
+  return (
+    <div className="rounded-xl border border-navy-100 dark:border-slate-700 overflow-hidden bg-white dark:bg-slate-900">
+      <div className="relative bg-navy-50 dark:bg-slate-800">
+        <img
+          src={versionSrc(shown)}
+          /* The published line, so it is the REAL alt rather than an empty one. */
+          alt={shown?.alt_text || slot.label || ''}
+          className="w-full aspect-square object-contain"
+        />
+        <div className="absolute top-1.5 right-1.5">
+          <SourceBadge source={shown?.source} version={shown?.version} />
+        </div>
+      </div>
+
+      <div className="p-3">
+        {!isBlank(slot.label) && (
+          <div className="font-display text-[13px] font-semibold text-navy-900 dark:text-slate-100 break-words">
+            {slot.label}
+          </div>
+        )}
+
+        {/* Why it is on the page. Read rather than copied, so no copy button — a
+            founder publishes the alt text, never this. */}
+        {!isBlank(shown?.justification) && (
+          <div className="mt-1 text-[12px] text-navy-700 dark:text-slate-300 leading-relaxed break-words">
+            {shown.justification}
+          </div>
+        )}
+
+        {!isBlank(shown?.alt_text) && (
+          <div className="mt-2 pt-2 border-t border-navy-100 dark:border-slate-700">
+            <div className="flex items-start justify-between gap-2">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-navy-500 dark:text-slate-400">
+                Alt text
+              </div>
+              <CopyButton text={shown.alt_text} />
+            </div>
+            <div className="mt-1 text-[12px] text-navy-800 dark:text-slate-200 leading-relaxed break-words">
+              {shown.alt_text}
+            </div>
+          </div>
+        )}
+
+        {/* Generated takes only — nobody directed an existing photograph. */}
+        {!isBlank(shown?.direction) && (
+          <div className="mt-2 text-[11.5px] text-navy-500 dark:text-slate-400 leading-relaxed break-words">
+            <span className="font-semibold">Asked for:</span> {shown.direction}
+          </div>
+        )}
+
+        {/* Every take, always — the lineage is the point of keeping versions
+            append-only, and it renders nothing at all on a single-take slot. */}
+        <VersionStrip takes={takes} at={idx} onPick={setAt} />
+
+        {/* Addressed by set + slot, which IS `PdpImageRef`. */}
+        <div className="mt-2">
+          <SubtleEdit
+            label="this picture"
+            placeholder="e.g. brighter background, show it in a hand for scale…"
+            onUpdate={onUpdate}
+            busy={busy}
+            compose={(instr) =>
+              `Regenerate the picture in image set "${setKey}", slot "${slot.slot_key}"` +
+              `${shown?.version ? ` (from version ${shown.version})` : ''}: ${instr}`
+            }
+          />
+        </div>
+
+        {ratio && (
+          <div className="mt-2 text-[10px] text-navy-500 dark:text-slate-400">{ratio}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StudioView({ content, imageSets, note, onUpdate, busy, platform }) {
+  // `content.html` IS the artifact now (2026-08-07) — one model-written document
+  // dressed as the storefront the product sells on, replacing the two typed schemas
+  // this view used to lay out itself. `AmazonPagePreview` / `StorefrontPagePreview`
+  // / `AmazonContent` / `ContentBlock` / `PageSection` are unreachable from here as
+  // a result; see the RETIRED note above `AmazonContent`.
+  const page = content?.html || null;
   // Grouped by category, because one category legitimately spans several sets —
   // a gallery whose photographs are not all the same shape is one gallery across
   // one set per shape, and showing those as two unexplained groups would read as a
@@ -3058,7 +3701,17 @@ function StudioView({ content, imageSets, note, onUpdate, busy }) {
     (n, s) => n + (s.slots?.length || 0),
     0,
   );
-  const [mode, setMode] = useState('page'); // 'page' | 'fields'
+  const [mode, setMode] = useState('page'); // 'page' | 'pictures'
+
+  // Resolved on every render rather than memoised, and deliberately: the page's
+  // gallery regions fill from `imageSets`, which changes on its own webhook as each
+  // picture lands, so the two have to be recombined whenever EITHER moves. A memo
+  // keyed on both would be the same work plus a dependency list to get wrong.
+  const resolved = resolveContentHtml(
+    page,
+    imageSets,
+    platform === 'other' ? 'store' : 'amazon',
+  );
 
   if (!page && !pictureCount) {
     return (
@@ -3077,14 +3730,14 @@ function StudioView({ content, imageSets, note, onUpdate, busy }) {
     <div className="p-6 max-w-[1100px] mx-auto flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-[12.5px] text-navy-600 dark:text-slate-400 leading-relaxed max-w-[640px]">
-          {content?.amazon
-            ? 'Amazon fixes which fields exist, so this fills them — shown as the listing a shopper would see. Switch to Fields to copy each one into Seller Central.'
-            : 'Your storefront lets you choose the sections, so this proposes them in order — shown as the page they build. Switch to Fields to copy them out.'}
+          This is a draft page, published nowhere — your live listing is untouched until you
+          publish it yourself. Its photographs update on their own as new ones are made. Switch to
+          Pictures for every take, with what each one is for.
         </p>
         <div className="flex rounded-lg border border-navy-100 dark:border-slate-600 overflow-hidden shrink-0">
           {[
             { key: 'page', label: 'Page' },
-            { key: 'fields', label: 'Fields' },
+            { key: 'pictures', label: 'Pictures' },
           ].map((t) => (
             <button
               key={t.key}
@@ -3104,13 +3757,16 @@ function StudioView({ content, imageSets, note, onUpdate, busy }) {
       </div>
 
       {/* THE PAGE. Content and pictures together, because that is what a page is —
-          the two artifacts are independent on the backend, and this view is the one
-          place a founder gets to see them as the single thing they publish. */}
+          they are separate artifacts on separate channels, and this is the one place
+          a founder gets to see them as the single thing they publish.
+
+          Sandboxed WITHOUT `scripts`, like the audit and the strategy and unlike the
+          Scout: this document is model-written. Its gallery regions still switch
+          between takes, because that machinery is pure CSS — a hidden radio per take
+          and a `:checked ~` rule, injected by `resolveContentHtml`. */}
       {mode === 'page' &&
-        (content?.amazon ? (
-          <AmazonPagePreview amazon={content.amazon} groups={groups} onUpdate={onUpdate} busy={busy} />
-        ) : content?.generic ? (
-          <StorefrontPagePreview generic={content.generic} groups={groups} onUpdate={onUpdate} busy={busy} />
+        (page ? (
+          <HtmlDoc html={resolved} title="Your draft page" />
         ) : (
           /* Pictures with no words yet — a real state, since the two artifacts land
              independently. Show the gallery rather than an empty page. */
@@ -3128,24 +3784,7 @@ function StudioView({ content, imageSets, note, onUpdate, busy }) {
           </div>
         ))}
 
-      {mode === 'fields' && page && (
-        <div className="rounded-2xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-card p-5">
-          <div className="font-display text-[17px] font-semibold text-navy-900 dark:text-slate-100">
-            Your page, written
-          </div>
-          <div className="mt-3">
-            {content?.amazon ? (
-              <AmazonContent amazon={content.amazon} />
-            ) : (
-              (content?.generic?.blocks || []).map((block, i) => (
-                <ContentBlock key={`${block.field}-${i}`} block={block} />
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
-      {mode === 'fields' && !!pictureCount && (
+      {mode === 'pictures' && !!pictureCount && (
         <div className="rounded-2xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-card p-5">
           <div className="font-display text-[17px] font-semibold text-navy-900 dark:text-slate-100">
             Your pictures
@@ -3196,11 +3835,23 @@ function StudioView({ content, imageSets, note, onUpdate, busy }) {
 // `areas` is the set of areas that have announced themselves — content-free
 // progress webhooks — used only to say how far along a run is while the page is
 // still being composed.
-function AuditView({ audit, areas, note }) {
+function AuditView({ audit, areas, areaTotal, note }) {
   const html = audit?.html;
 
   if (!html) {
     const seen = areas?.size || 0;
+    // Nothing about this product can ever be audited — it is not published and no
+    // photographs were supplied, so the Auditor is never routed on this thread. The
+    // idle copy must not invite the founder to ask for an audit they cannot have,
+    // and there is no denominator to count against.
+    if (!areaTotal) {
+      return (
+        <CanvasEmpty
+          idleTitle="Nothing to audit yet"
+          idleBody="There is no page to audit — this product has not been published and no photographs were added. Ask in the chat and we will help you build the page instead."
+        />
+      );
+    }
     return (
       <CanvasEmpty
         busy={Boolean(note)}
@@ -3210,11 +3861,21 @@ function AuditView({ audit, areas, note }) {
         // The one thing only this tab knows. It stays a separate line from `note`
         // so the live webhook line ("SEO is ready") and the count sit side by side
         // instead of one overwriting the other.
+        //
+        // `areaTotal` rather than the roster's size: an unpublished product can only
+        // ever have its photographs audited, so counting against four would leave
+        // this line reading "1 of 4" on a thread that is completely finished.
         progress={
-          seen ? `${seen} of ${AUDIT_AREAS.length} areas are in.` : null
+          seen
+            ? `${seen} of ${areaTotal} ${areaTotal === 1 ? 'area is' : 'areas are'} in.`
+            : null
         }
         idleTitle="Nothing audited yet"
-        idleBody="Ask for the audit in the chat. You can ask for the whole thing, or for one area on its own."
+        idleBody={
+          areaTotal < Object.keys(AUDIT_AREAS).length
+            ? 'Ask for the audit in the chat. This product has no published page, so the photographs are what can be judged.'
+            : 'Ask for the audit in the chat. You can ask for the whole thing, or for one area on its own.'
+        }
       />
     );
   }
@@ -3251,10 +3912,16 @@ function AuditView({ audit, areas, note }) {
 // in `api/v1/endpoints/pdp_agent.py`, `fire_audit_area`'s `data` back to
 // `{area: value}`, and the `mergeAudit` / `areaKeys` / `AUDIT_META_KEYS` trio
 // above uncommented so the per-area payloads have somewhere to land.
+//
+// AND the per-area QUESTION has to come back from somewhere. `AUDIT_AREAS` used to
+// carry one per area; it mirrors the backend's one-dict roster now and holds labels
+// only, so `AreaSection`'s subtitle has no source. Either add the questions back to
+// that constant or drop the subtitle — the section reads fine without it, since
+// each area's own HTML already heads itself with its question.
 // ---------------------------------------------------------------------------
 // // There is no aligned count here any more — the markdown areas have no rows.
 // function AreaSection({ areaKey, value }) {
-//   const question = AREA_BY_KEY[areaKey]?.question;
+//   const question = null; // see the restore note above — no source for this now
 //   const isMarkdown = typeof value === 'string';
 //   const { verdict, description, image_groups, missing_shots, ...rest } =
 //     (isMarkdown ? {} : value) || {};
@@ -3350,6 +4017,11 @@ function Markdown({ text, plain = false }) {
 // // `ImageJudgement` carries no boolean — a photograph is rarely simply good or bad,
 // // so the verdict is a sentence. Showing the photo beside its read is what makes
 // // this area legible at all.
+// //
+// // STALE SINCE 2026-08-06: `img.verdict` below no longer exists. The backend folded
+// // it into `justification`, which now carries the call AND the evidence in one line
+// // (<=30 words). Restoring this component means rendering `img.justification` alone —
+// // the two <p>s collapse to one, exactly as the backend's own audit card did.
 // function ImageJudgements({ images }) {
 //   return (
 //     <div className="flex flex-col gap-3 border-t border-navy-100 dark:border-slate-800 pt-3">
