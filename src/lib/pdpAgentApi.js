@@ -108,14 +108,14 @@
 //
 //                   ITS PICTURES ARE REFERENCES, AND YOU RESOLVE THEM. An `<img>`
 //                   whose src is `pdp-image:SET/SLOT` names one picture; any
-//                   element carrying `data-pdp-gallery="SET"` (or "all") is a
-//                   REGION to replace with every picture in that set. Both resolve
-//                   against `image_sets` below — see `resolveContentHtml` in
-//                   `PdpAgentScreen.jsx`, which is the twin of the backend's own
-//                   resolver.
+//                   element carrying a keyless `data-pdp-gallery` is THE gallery, a
+//                   REGION to replace with every picture on the thread, in set
+//                   order. Both resolve against `image_sets` below — see
+//                   `resolveContentHtml` in `PdpAgentScreen.jsx`, which is the twin
+//                   of the backend's own resolver.
 //
-//                   RE-RESOLVE WHENEVER EITHER SIDE MOVES. A gallery region fills
-//                   from whatever its set holds right now, so a picture arriving on
+//                   RE-RESOLVE WHENEVER EITHER SIDE MOVES. The gallery region fills
+//                   from whatever the sets hold right now, so a picture arriving on
 //                   `pdp.studio.image` must appear on the page immediately — with
 //                   no new `content` payload. That is the whole reason the page
 //                   ships unresolved, and it is also what keeps a generated

@@ -261,8 +261,15 @@ function versionSrc(version) {
 // version, which no model can emit, and a merchant URL may have expired. Two forms:
 //
 //     <img src="pdp-image:SET/SLOT">        ONE picture, wherever the copy wants it
-//     <div data-pdp-gallery="SET">          a REGION that fills with the whole set
-//     <div data-pdp-gallery="all">          …or with every set
+//     <div data-pdp-gallery>                THE gallery — every picture, every set
+//
+// **The region takes NO key** (2026-08-10). It used to name one set, and the page
+// could carry one region per set — which rendered as a STACK of labelled blocks,
+// each with its own heading, its own rail and its own stage. A founder judging
+// their listing needs the single gallery a shopper will actually use, so every
+// region now flattens every set into one rail over one stage. A value on the
+// attribute is tolerated and ignored, so a model writing the older form still
+// resolves rather than leaving a marker on the page.
 //
 // The gallery form is what makes the image set VARIABLE: the Studio adds pictures
 // to a set turn after turn, and a region grows to hold them with no content
@@ -272,8 +279,8 @@ function versionSrc(version) {
 //
 // CHANGE ONE, CHECK THE OTHER: `growvana-ai-backend`'s
 // `utils/pdp/pdp_content_images.py` is the same resolver in Python, for the PNG
-// that models look at. It shares the scheme string, the attribute name, the `all`
-// sentinel and the shape of an expanded item.
+// that models look at. It shares the scheme string, the attribute name and the
+// shape of an expanded item.
 //
 // **It differs from that one on purpose in exactly one way: TAKES.** Python shows
 // the current take alone, badged `AI · v3 of 3`, because its reader is deciding
@@ -291,7 +298,6 @@ function versionSrc(version) {
 // chosen-version field on the backend to set.
 const PDP_IMAGE_SCHEME = 'pdp-image:';
 const GALLERY_ATTR = 'data-pdp-gallery';
-const GALLERY_ALL = 'all';
 
 // Every class this injects is prefixed `gvx-`, and both content prompts forbid the
 // model from using that prefix — which is what keeps our chrome from being restyled
@@ -302,8 +308,13 @@ const IMG_REF_RE = new RegExp(
   `src\\s*=\\s*(["'])${PDP_IMAGE_SCHEME}([^"']*)\\1`,
   'gi',
 );
+// The VALUE is optional and is not captured: a bare attribute is what the content
+// prompt now asks for, but a model writing `data-pdp-gallery="all"` — or an older
+// page naming a set — must still resolve rather than leave a marker on the founder's
+// screen. `(?![\w-])` is what stops this matching a longer attribute name that
+// merely starts the same way.
 const GALLERY_RE = new RegExp(
-  `<([a-zA-Z][\\w-]*)\\b[^>]*?${GALLERY_ATTR}\\s*=\\s*(["'])([^"']*)\\2[^>]*>(?:[\\s\\S]*?<\\/\\1\\s*>)?`,
+  `<([a-zA-Z][\\w-]*)\\b[^>]*?${GALLERY_ATTR}(?![\\w-])(?:\\s*=\\s*(["'])[^"']*\\2)?[^>]*>(?:[\\s\\S]*?<\\/\\1\\s*>)?`,
   'gi',
 );
 
@@ -379,11 +390,19 @@ function figureMarkup(set, slot, uid) {
     )
     .join('');
 
+  // The set's CATEGORY rides the caption, where it used to head its own block above
+  // its own rail. With every set flattened into one gallery there is no per-set
+  // block left to head — and dropping the category outright would have cost the
+  // founder the only signal of what KIND of picture a thumbnail is, which is the
+  // difference between a pack shot and a comparison chart.
+  const kind = (set?.category || '').trim();
+
   const caps = takes
     .map((v) => {
       const bits = [
         `<span class="${GVX}-badge">${esc(takeBadge(v, takes.length))}</span>`,
       ];
+      if (kind) bits.push(`<span class="${GVX}-kind">${esc(kind)}</span>`);
       if (slot.label) bits.push(`<span class="${GVX}-job">${esc(slot.label)}</span>`);
       let cap = `<figcaption class="${GVX}-cap">${bits.join('')}`;
       if (v.justification) cap += `<div class="${GVX}-why">${esc(v.justification)}</div>`;
@@ -423,6 +442,13 @@ function figureMarkup(set, slot, uid) {
 // judging whether their listing works, so the gallery has to behave like the
 // gallery a shopper will actually use.
 //
+// **ONE gallery across EVERY set** (2026-08-10). This used to emit a heading, a rail
+// and a stage PER SET, which on a real thread rendered as a vertical stack of
+// labelled blocks — and with one picture per set, no rail at all, since a
+// single-thumbnail rail is suppressed as a control that does nothing. Every slot
+// from every set now shares one rail and one stage. The SET does not disappear: it
+// is still half of a picture's address and its category rides each caption.
+//
 // TWO levels of selection, and they nest rather than compete: the RAIL picks which
 // slot is on the stage, and each slot keeps its own version strip picking which
 // TAKE of that slot is shown. Both are pure CSS `:checked ~` sibling rules, because
@@ -432,32 +458,22 @@ function figureMarkup(set, slot, uid) {
 // Amazon stacks its rail down the left of the stage; a storefront puts its
 // thumbnails under the picture, which `--store` does by reversing the column.
 function galleryMarkup(sets, seed, variant = 'amazon') {
-  const parts = [];
   const rules = [];
   let uid = seed;
-  // How many sets share each category, which decides whether the heading needs the
-  // SHAPE to stay unambiguous. One category legitimately spans several sets — a
-  // gallery whose photographs are not all the same shape is one gallery across one
-  // set per shape — so naming the category alone would print "Gallery" twice with
-  // nothing to say why, which reads as a bug rather than as a fact about the
-  // founder's own photographs.
-  const perCategory = new Map();
+  const gid = `${GVX}-s-${uid}`;
+  uid += 1;
+  const inputs = [];
+  const thumbs = [];
+  const panels = [];
   for (const set of sets) {
-    const name = (set.category || set.set_key || '').trim();
-    perCategory.set(name, (perCategory.get(name) || 0) + 1);
-  }
-  for (const set of sets) {
-    const gid = `${GVX}-s-${uid}`;
-    uid += 1;
-    const inputs = [];
-    const thumbs = [];
-    const panels = [];
     for (const slot of set.slots || []) {
       const { html, css } = figureMarkup(set, slot, uid);
       uid += 1;
       // A slot whose every take lacks bytes renders nothing, and must not take an
-      // index with it — `nth-child` counts what is ACTUALLY emitted, so the
-      // index is taken from the rendered list rather than from the loop.
+      // index with it — `nth-child` counts what is ACTUALLY emitted, so the index
+      // is taken from the rendered list rather than from the loop. That matters
+      // more now that one unrenderable slot can shift every selector for pictures
+      // in a DIFFERENT set.
       if (!html) continue;
       const i = panels.length;
       const id = `${gid}-${i}`;
@@ -479,35 +495,19 @@ function galleryMarkup(sets, seed, variant = 'amazon') {
       );
       panels.push(`<div class="${GVX}-panel">${html}</div>`);
     }
-    if (!panels.length) continue;
-    // ALWAYS named, where this used to appear only when a region held more than one
-    // set. A founder looking at a rail of sixteen photographs needs to know what
-    // KIND of pictures they are — the gallery, the benefit graphics, a comparison
-    // chart — and on a single-set region that label was simply absent.
-    const name = (set.category || set.set_key || '').trim();
-    if (name) {
-      const shape =
-        perCategory.get(name) > 1 && set.aspect_ratio
-          ? `<span class="${GVX}-shape">${esc(set.aspect_ratio)}</span>`
-          : '';
-      parts.push(
-        `<div class="${GVX}-setname">${esc(name)}<span class="${GVX}-count">${
-          panels.length
-        }</span>${shape}</div>`,
-      );
-    }
-    // One picture needs no rail to choose between — the panel stands alone, and a
-    // single-thumbnail rail would read as a control that does nothing.
-    const rail =
-      thumbs.length > 1 ? `<div class="${GVX}-rail">${thumbs.join('')}</div>` : '';
-    parts.push(
-      `<div class="${GVX}-gal ${GVX}-gal--${variant}">${inputs.join(
-        '',
-      )}${rail}<div class="${GVX}-main">${panels.join('')}</div></div>`,
-    );
   }
-  if (!parts.length) return { html: '', css: '', next: uid };
-  return { html: parts.join(''), css: rules.join(''), next: uid };
+  if (!panels.length) return { html: '', css: '', next: uid };
+  // One picture needs no rail to choose between — the panel stands alone, and a
+  // single-thumbnail rail would read as a control that does nothing.
+  const rail =
+    thumbs.length > 1 ? `<div class="${GVX}-rail">${thumbs.join('')}</div>` : '';
+  return {
+    html: `<div class="${GVX}-gal ${GVX}-gal--${variant}">${inputs.join(
+      '',
+    )}${rail}<div class="${GVX}-main">${panels.join('')}</div></div>`,
+    css: rules.join(''),
+    next: uid,
+  };
 }
 
 // Our own chrome. Neutral black/white/grey and never a brand colour — a mint chip
@@ -525,9 +525,7 @@ const GVX_BASE_CSS = `
 .${GVX}-main{flex:1 1 auto;min-width:0}
 .${GVX}-panel{display:none}
 .${GVX}-panel .${GVX}-take{max-height:420px;object-fit:contain}
-.${GVX}-setname{display:flex;align-items:center;gap:6px;margin:14px 0 0;font:700 10px/1.4 ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:#6b7280}
-.${GVX}-count{padding:0 5px;border-radius:999px;background:rgba(17,17,17,.07);color:#4b5563;font-size:9px;letter-spacing:.02em}
-.${GVX}-shape{color:#9ca3af;font-weight:600;letter-spacing:.02em;text-transform:none}
+.${GVX}-kind{margin-left:6px;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9ca3af;vertical-align:middle}
 .${GVX}-shot{margin:0;position:relative}
 .${GVX}-pick{position:absolute;width:0;height:0;opacity:0;pointer-events:none}
 .${GVX}-stage{position:relative}
@@ -546,7 +544,7 @@ const GVX_BASE_CSS = `
 //
 // Fail-soft both ways, matching the Python side: an `<img>` naming a slot that does
 // not exist keeps its placeholder src (one broken image, not a lost page), and a
-// region naming an unknown set collapses to nothing.
+// region on a thread holding no pictures collapses to nothing.
 function resolveContentHtml(html, imageSets, variant = 'amazon') {
   if (!html) return html;
   const sets = imageSets?.sets || [];
@@ -562,12 +560,11 @@ function resolveContentHtml(html, imageSets, variant = 'amazon') {
     return src ? `src=${quote}${esc(src)}${quote}` : whole;
   });
 
-  out = out.replace(GALLERY_RE, (whole, _tag, _q, key) => {
-    const wanted = String(key).trim();
-    const chosen =
-      wanted === GALLERY_ALL ? sets : byKey.has(wanted) ? [byKey.get(wanted)] : [];
-    if (!chosen.length) return '';
-    const { html: markup, css, next } = galleryMarkup(chosen, uid, variant);
+  // No key to read: a region is THE gallery and holds every set. `uid` still
+  // advances per region, because a page carrying two of them would otherwise mint
+  // the same radio ids twice and the second gallery would drive the first.
+  out = out.replace(GALLERY_RE, () => {
+    const { html: markup, css, next } = galleryMarkup(sets, uid, variant);
     uid = next;
     if (css) rules.push(css);
     return markup;
