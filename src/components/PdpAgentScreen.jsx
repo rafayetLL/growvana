@@ -125,12 +125,15 @@ const LIVE_SPECIALISTS = new Set(['auditor', 'scout', 'strategist', 'studio']);
 // `pdp.studio.image` fires once per picture, so matching whole stage names would
 // need a roster this file has deliberately never held.
 //
-// The Strategist is absent because it fires no webhooks — one call, no tools, so
-// there is nothing to report between starting and finishing. Its empty page shows
-// the line its SSE frame set, and nothing refines it.
+// The Strategist was absent here on the grounds that it fired no webhooks — true
+// only of its very first version. It has fired `pdp.strategy.tool_call` since the
+// read/edit loop landed, and `pdp.strategy.report` since 2026-08-11, so its lines
+// were being computed and then dropped: a founder watching a reword saw the SSE
+// frame's opener and nothing after it.
 const STAGE_OWNER = [
   ['pdp.audit.', 'auditor'],
   ['pdp.scout.', 'scout'],
+  ['pdp.strategy.', 'strategist'],
   ['pdp.studio.', 'studio'],
 ];
 
@@ -807,6 +810,11 @@ export default function PdpAgentScreen({
       if (!isHttpUrl(productUrl.trim())) {
         return 'Paste the link to the product page you want audited — it needs to start with http:// or https://.';
       }
+      // Whether an Amazon link was pasted under the Amazon platform is checked on
+      // the BACKEND alone (`is_amazon_url` in `utils/pdp/pdp_intake.py`), which
+      // rejects it with `not_an_amazon_link` before anything is read. Its message is
+      // written for the founder and reaches this screen through `friendlyInitError`
+      // unchanged, so there is deliberately no copy of that rule here to drift.
       return null;
     }
     if (!productText.trim()) {
@@ -972,6 +980,33 @@ export default function PdpAgentScreen({
         const owner = specialistForStage(stage);
         if (owner && evt.success_message) {
           setRunning((prev) => (prev[owner] ? { ...prev, [owner]: evt.success_message } : prev));
+        }
+        // The rendered audit PAGE, arriving EARLY. `done.audit` still carries it and
+        // is still authoritative — this only stops a finished audit sitting
+        // invisible until the concurrent Scout returns, which can be minutes.
+        //
+        // `data.audit` IS the `done` frame's `audit` value, same key and same
+        // shape, so this is the identical assignment the `done` handler makes and
+        // needs no reducer. Re-receiving it on `done` is a harmless no-op.
+        //
+        // It must be checked BEFORE the `pdp.audit.` prefix bail-out below, which
+        // treats every remaining audit stage as a content-free area event.
+        if (stage === 'pdp.audit.report') {
+          if (data.audit) {
+            setAudit(data.audit);
+            if (!canvasTouchedRef.current) setCanvasSel('auditor');
+          }
+          return;
+        }
+        // The strategy document, arriving early for the same reason: on a full-arc
+        // turn the Studio runs after the Strategist and spends minutes making
+        // pictures, with `done` gated on the whole turn.
+        if (stage === 'pdp.strategy.report') {
+          if (data.strategy) {
+            setStrategy(data.strategy);
+            if (!canvasTouchedRef.current) setCanvasSel('strategist');
+          }
+          return;
         }
         // The Scout lands whole and has ONE stage, so it needs no reducer — its
         // `data.scout` IS the `done` frame's `scout` value, and a later run
