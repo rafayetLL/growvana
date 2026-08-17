@@ -741,6 +741,16 @@ export default function PdpAgentScreen({
     if (text) setActivity((prev) => (prev[prev.length - 1] === text ? prev : [...prev, text].slice(-40)));
   };
 
+  // A turn is mostly DEAD AIR — a specialist runs for minutes emitting nothing on
+  // this channel, and the per-step webhooks arrive on a different one entirely. The
+  // backend's heartbeat keeps the CONNECTION alive through that; this says so to
+  // the founder, who otherwise watches an unchanged spinner and cannot tell a slow
+  // step from a dead one. Counted off real frames only — the heartbeat is an SSE
+  // comment the reader drops, so it never resets this.
+  const STALL_AFTER_MS = 90_000;
+  const [stalled, setStalled] = useState(false);
+  const lastFrameRef = useRef(0);
+
   // `{ html }` — the four areas composed into ONE rendered page. Replaced whole,
   // like every other artifact here: the areas' own output is backend-internal and
   // never reaches this screen, so there is nothing to merge per key any more.
@@ -798,6 +808,19 @@ export default function PdpAgentScreen({
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, streamingText, activity, researching]);
+
+  // Polled rather than driven off a per-frame timer, so a turn that goes silent
+  // still crosses the threshold with nothing arriving to trigger a re-render.
+  useEffect(() => {
+    if (!busy) {
+      setStalled(false);
+      return undefined;
+    }
+    const id = setInterval(() => {
+      setStalled(Date.now() - lastFrameRef.current > STALL_AFTER_MS);
+    }, 5_000);
+    return () => clearInterval(id);
+  }, [busy]);
 
   const cleanedImageUrls = imageUrls.map((s) => s.trim()).filter(Boolean);
 
@@ -953,6 +976,8 @@ export default function PdpAgentScreen({
     setStreamingText(null);
     setRunning({});
     setActivity([]);
+    setStalled(false);
+    lastFrameRef.current = Date.now();
     canvasTouchedRef.current = false;
 
     const webhook_request = buildWebhookRequest({
@@ -964,6 +989,9 @@ export default function PdpAgentScreen({
     if (webhook_request) {
       sub = subscribeProgress(taskId, (evt) => {
         if (evt.status !== 'success' || !evt.data) return;
+        // Progress on the OTHER channel is still proof the turn is alive, so it
+        // clears the stall notice even though nothing came down the stream.
+        lastFrameRef.current = Date.now();
         const { stage, data } = evt;
         // Every webhook carries a founder-facing `success_message` — it drives the
         // activity feed so each research call landing is visible as it happens.
@@ -1075,6 +1103,7 @@ export default function PdpAgentScreen({
         webhook_request,
         signal: controller.signal,
       })) {
+        lastFrameRef.current = Date.now();
         if (ev.type === 'ai_message_token') {
           assistantText += ev.content || '';
           setStreamingText(assistantText);
@@ -1162,6 +1191,7 @@ export default function PdpAgentScreen({
       }
       setTyping(false);
       setStreamingText(null);
+      setStalled(false);
       // Cleared in `finally`, so a turn that errors or is aborted mid-run cannot
       // leave a tab spinning forever on work that has stopped.
       setRunning({});
@@ -1311,6 +1341,10 @@ export default function PdpAgentScreen({
                       ) : (
                         <DraftingPill label={researching ? 'Researching your page' : 'Thinking'} />
                       ))}
+
+                    {busy && stalled && (
+                      <StallNotice onStop={() => abortRef.current?.abort()} />
+                    )}
                   </div>
                 </div>
 
@@ -4336,6 +4370,27 @@ function DraftingPill({ label }) {
     <div className="inline-flex items-center gap-2 text-[12.5px] text-navy-600 dark:text-slate-400">
       <span className="h-4 w-4 rounded-full border-2 border-meta-100 border-t-meta-600 animate-spin" />
       {label}…
+    </div>
+  );
+}
+
+// Shown after 90 seconds with nothing on EITHER channel. The turn is very likely
+// still running — a Scout pass or an image batch legitimately takes minutes — so
+// this says so rather than implying a failure, and offers the way out a founder
+// otherwise does not have.
+function StallNotice({ onStop }) {
+  return (
+    <div className="mt-2 flex items-start gap-2 text-[12.5px] text-navy-600 dark:text-slate-400">
+      <span>
+        Still working — this step can take a few minutes.{' '}
+        <button
+          type="button"
+          onClick={onStop}
+          className="underline underline-offset-2 hover:text-navy-800 dark:hover:text-slate-200"
+        >
+          Stop waiting
+        </button>
+      </span>
     </div>
   );
 }
