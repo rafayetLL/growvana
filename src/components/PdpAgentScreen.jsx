@@ -237,13 +237,88 @@ function mergeImageSets(prev, incoming) {
   return { sets: [...bySetKey.values()] };
 }
 
-// The newest take of a picture — the one to show. Versions are append-only and the
-// backend numbers them from 1, but this sorts rather than trusting array order,
-// because the webhook and the done frame can deliver them in different orders.
+// A take that actually EXISTS. `source: 'planned'` is a picture the strategy has
+// directed and nothing has rendered yet — every decision about it except the bytes —
+// and a render that FAILS leaves its planned row standing so the next turn can retry
+// it with the direction intact.
+//
+// **The endpoint is what guarantees we never see one**, not this: it drops any take
+// carrying neither `data_uri` nor `url`, plus any slot and set left empty. This is
+// the second line, and it earns its one predicate by being the JS twin of
+// `PdpImageSlot.current()` (`schemas/image_set.py`) — which tests `source` rather
+// than the bytes for the same reason, one field always on the wire — in a separate
+// repository where NOTHING in either build catches a divergence.
+//
+// Only the two readers that PICK or COUNT takes use it; `figureMarkup` and
+// `ImageSlotCard` filter on `versionSrc(v)`, which a planned take fails already.
+function isRendered(version) {
+  return !!version && version.source !== 'planned';
+}
+
+// The newest RENDERED take of a picture — the one to show. Versions are append-only
+// and the backend numbers them from 1, but this sorts rather than trusting array
+// order, because the webhook and the done frame can deliver them in different
+// orders. A slot holding a good v1 and a planned v2 still answers v1.
 function currentVersion(slot) {
-  const versions = slot?.versions || [];
-  if (!versions.length) return null;
-  return versions.reduce((a, b) => (b.version > a.version ? b : a));
+  const rendered = (slot?.versions || []).filter(isRendered);
+  if (!rendered.length) return null;
+  return rendered.reduce((a, b) => (b.version > a.version ? b : a));
+}
+
+// Does this picture appear in the STUDIO BROWSER at all — the whole slot, not one
+// take. A slot whose CURRENT take the Strategist rejected is hidden outright rather
+// than falling back to an older one: the newest take is the picture, and showing the
+// take before it would put a photograph the founder has already moved past back on
+// screen as though it were current.
+//
+// **ONLY `true` SHOWS** (2026-08-23). This tested `!== false`, so `null` showed too —
+// and `null` meant two different things at once: a picture the Studio made beyond the
+// plan (which certainly belongs on the page) and a seeded photograph no verdict has
+// reached (which nobody has vouched for). A founder could not be shown one without
+// the other. The backend now stamps `true` on EVERY take the Studio renders, which
+// leaves `null` meaning exactly one thing, and lets this test for approval outright.
+//
+// So the three states now read:
+//   true   the strategy asked for this, or a verdict approved it   -> SHOWN
+//   false  a verdict looked at it and rejected it                  -> hidden
+//   null   a seeded photograph no verdict has reached              -> hidden
+//
+// **The cost, and it is real**: `strategy.yml` tells the Strategist it normally
+// writes a verdict on every photograph the product already has, but nothing enforces
+// that and the plan parse is lenient by design. A photograph it skips is not rejected
+// — it was never mentioned — and it now stays off screen. `unjudgedCount` below is
+// what keeps that from being silent; the two move together.
+//
+// A whole slot, not one take: a slot whose CURRENT take is not approved is hidden
+// outright rather than falling back to an older one, because the newest take is the
+// picture and showing the one before it would put a photograph the founder has
+// already moved past back on screen as though it were current.
+//
+// **Deliberately NOT folded into `isRendered`.** That predicate is the JS twin of
+// `PdpImageSlot.current()` and moves only when the Python does; this is a display
+// choice that exists on this side alone, and keeping them apart is what stops the
+// twin drifting.
+function isSlotShown(slot) {
+  return currentVersion(slot)?.strategy_alignment === true;
+}
+
+// How many of the founder's OWN photographs are waiting on a verdict — seeded, never
+// rejected, simply never mentioned by a strategy. These are the pictures `isSlotShown`
+// now withholds, and this is the only thing that says so.
+//
+// **Seeded only.** A take the Studio rendered carries `true`, so anything null here is
+// a photograph that came off the founder's page — which is exactly the one whose
+// silent disappearance would be indefensible.
+function unjudgedCount(imageSets) {
+  return (imageSets?.sets || []).reduce(
+    (n, s) =>
+      n +
+      (s.slots || []).filter((slot) => {
+        const v = currentVersion(slot);
+        return v && v.strategy_alignment == null && v.source === 'existing';
+      }).length,
+    0,
+  );
 }
 
 // What to put in an <img> for one take. Prefer the real URL where there is one —
@@ -470,6 +545,12 @@ function galleryMarkup(sets, seed, variant = 'amazon') {
   const panels = [];
   for (const set of sets) {
     for (const slot of set.slots || []) {
+      // A picture the Strategist rejected is out of the gallery too, not only the
+      // picture browser. Skipped BEFORE `figureMarkup` so it never takes a panel
+      // index — the `nth-child` selectors below count what is actually emitted, and
+      // a hidden slot that still consumed an index would shift every picture after
+      // it onto the wrong thumbnail.
+      if (!isSlotShown(slot)) continue;
       const { html, css } = figureMarkup(set, slot, uid);
       uid += 1;
       // A slot whose every take lacks bytes renders nothing, and must not take an
@@ -559,7 +640,14 @@ function resolveContentHtml(html, imageSets, variant = 'amazon') {
     const [setKey, slotKey] = String(token).trim().split('/');
     const set = byKey.get((setKey || '').trim());
     const slot = (set?.slots || []).find((s) => s.slot_key === (slotKey || '').trim());
-    const src = versionSrc(currentVersion(slot));
+    // A rejected picture resolves to nothing, exactly as an unknown handle does, so
+    // the same rule holds across the whole screen. **What the reader sees differs
+    // from the gallery case**: this rewrites an `<img>` SRC rather than emitting a
+    // figure, so an unresolved one leaves the tag standing with its `pdp-image:`
+    // placeholder and the browser draws a broken image. Removing the picture
+    // outright means removing the whole tag, which this regex cannot reach — it
+    // matches the src attribute alone.
+    const src = isSlotShown(slot) ? versionSrc(currentVersion(slot)) : null;
     return src ? `src=${quote}${esc(src)}${quote}` : whole;
   });
 
@@ -2963,6 +3051,10 @@ function groupPictures(group) {
   const out = [];
   for (const set of group?.sets || []) {
     for (const slot of set.slots || []) {
+      // A slot the Strategist rejected is skipped whole, the same way a slot with no
+      // source is — this is the list the version strip reads its takes from, so
+      // dropping it here is what keeps a rejected picture out of the strip as well.
+      if (!isSlotShown(slot)) continue;
       const current = currentVersion(slot);
       const src = versionSrc(current);
       if (src) out.push({ set, slot, current, src, key: `${set.set_key}::${slot.slot_key}` });
@@ -2994,8 +3086,12 @@ function groupPictures(group) {
 // append-only on the backend and numbered from 1, so this sorts rather than
 // trusting array order — the webhook and the `done` frame can deliver them in
 // different orders.
+//
+// Planned takes are dropped, like everywhere else a picture is shown: this feeds
+// both the take count on the thumbnails and the strip a founder clicks through, and
+// a row with no bytes in either place is a blank frame with a version number on it.
 function slotTakes(slot) {
-  return [...(slot?.versions || [])].sort((a, b) => a.version - b.version);
+  return (slot?.versions || []).filter(isRendered).sort((a, b) => a.version - b.version);
 }
 
 // EVERY take of one slot, all on screen at once — the Meta Ad screen's
@@ -3668,7 +3764,22 @@ function StorefrontPagePreview({ generic, groups, onUpdate, busy }) {
 function ImageSlotCard({ slot, ratio, setKey, onUpdate, busy }) {
   // Newest LAST, and the newest IS the page — versions are append-only and there is
   // no chosen-version field on the backend, so this previews and never selects.
-  const takes = (slot?.versions || []).filter((v) => versionSrc(v));
+  //
+  // **EVERY take, whatever the Strategist made of it.** `isSlotShown` decides whether
+  // this card appears at all, on the alignment of the slot's LATEST take; once it is
+  // on screen the whole lineage is here, rejected takes included, because the history
+  // is the point of keeping versions append-only. Filtering inside the card would
+  // punch holes in a version strip whose numbers a founder reads as a sequence.
+  //
+  // **SORTED BY VERSION NUMBER, not trusted in array order** — the same rule
+  // `currentVersion` follows and for the same reason: the webhook and the `done`
+  // frame can deliver takes in different orders, and `mergeImageSets` only sorts the
+  // slots it actually merged. Without this the card could show one take while
+  // `isSlotShown` judged the card on another, so a rejected picture would appear in a
+  // slot that only passed the filter because some other take was newest.
+  const takes = (slot?.versions || [])
+    .filter((v) => versionSrc(v))
+    .sort((a, b) => a.version - b.version);
   const [at, setAt] = useState(null);
   if (!takes.length) return null;
 
@@ -3763,10 +3874,17 @@ function StudioView({ content, imageSets, note, onUpdate, busy, platform }) {
   // one set per shape, and showing those as two unexplained groups would read as a
   // bug rather than as a fact about the founder's own photographs.
   const groups = setsByCategory(imageSets);
+  // Counted over the slots actually SHOWN, so the number matches what is on screen.
+  // `slots.length` counted a rejected picture and a slot holding nothing but a plan,
+  // both of which tell a founder about a picture they cannot see.
   const pictureCount = (imageSets?.sets || []).reduce(
-    (n, s) => n + (s.slots?.length || 0),
+    (n, s) => n + (s.slots || []).filter(isSlotShown).length,
     0,
   );
+  // The founder's own photographs that no verdict has reached, and which `isSlotShown`
+  // therefore withholds. Counted beside `pictureCount` because the two are read
+  // together: one says what is on screen, the other says what is not and why.
+  const unjudged = unjudgedCount(imageSets);
   const [mode, setMode] = useState('page'); // 'page' | 'pictures'
 
   // Resolved on every render rather than memoised, and deliberately: the page's
@@ -3779,7 +3897,9 @@ function StudioView({ content, imageSets, note, onUpdate, busy, platform }) {
     platform === 'other' ? 'store' : 'amazon',
   );
 
-  if (!page && !pictureCount) {
+  // `unjudged` counts here too: a thread with photographs that no verdict has reached
+  // has pictures, and telling the founder nothing exists yet would be false.
+  if (!page && !pictureCount && !unjudged) {
     return (
       <CanvasEmpty
         busy={Boolean(note)}
@@ -3850,7 +3970,10 @@ function StudioView({ content, imageSets, note, onUpdate, busy, platform }) {
           </div>
         ))}
 
-      {mode === 'pictures' && !!pictureCount && (
+      {/* `|| unjudged`, so the panel still renders when every photograph is waiting on
+          a verdict — the one case where the withheld-pictures line is the whole point
+          and a `pictureCount` gate alone would suppress it. */}
+      {mode === 'pictures' && !!(pictureCount || unjudged) && (
         <div className="rounded-2xl border border-navy-100 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-card p-5">
           <div className="font-display text-[17px] font-semibold text-navy-900 dark:text-slate-100">
             Your pictures
@@ -3860,6 +3983,18 @@ function StudioView({ content, imageSets, note, onUpdate, busy, platform }) {
             and shown alongside anything made for you — nothing is ever replaced, so every earlier
             version stays available.
           </p>
+          {/* The pictures `isSlotShown` is withholding. Said in the founder's own terms —
+              these are THEIR photographs, they are not rejected, and the reason they are
+              not on screen is that no strategy has covered them yet. Without this line a
+              skipped verdict quietly deletes a picture they uploaded. */}
+          {!!unjudged && (
+            <p className="mt-1 text-[12.5px] text-amber-700 dark:text-amber-400 leading-relaxed">
+              {unjudged} more of your own photograph{unjudged === 1 ? ' is' : 's are'} not shown
+              yet — the strategy has not covered {unjudged === 1 ? 'it' : 'them'}. Ask for the
+              strategy to be revisited and {unjudged === 1 ? 'it' : 'they'} will be judged and
+              brought in.
+            </p>
+          )}
           {groups.map((group) => (
             <div key={group.category} className="mt-4">
               <div className="text-[11px] font-semibold uppercase tracking-wide text-navy-500 dark:text-slate-400">
@@ -3870,7 +4005,7 @@ function StudioView({ content, imageSets, note, onUpdate, busy, platform }) {
                   key={set.set_key}
                   className="mt-2 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"
                 >
-                  {(set.slots || []).map((slot) => (
+                  {(set.slots || []).filter(isSlotShown).map((slot) => (
                     <ImageSlotCard
                       key={`${set.set_key}-${slot.slot_key}`}
                       slot={slot}

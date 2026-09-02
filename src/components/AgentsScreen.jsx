@@ -12,6 +12,7 @@ import {
   IconClock,
   IconSparkle,
   IconCompass,
+  IconChart,
 } from './icons.jsx';
 
 const AGENTS = [
@@ -49,6 +50,18 @@ const AGENTS = [
     status: 'active',
     statKey: 'Audit Areas',
     statValue: 6,
+    enabled: true,
+  },
+  {
+    id: 'forecast_agent',
+    name: 'Forecast Agent',
+    description: 'Sales forecasting for 1P Vendor Central — verified Excel workbooks built from your real files',
+    icon: IconChart,
+    iconBg: 'bg-sky-50 dark:bg-sky-500/10',
+    iconColor: 'text-sky-500 dark:text-sky-400',
+    status: 'active',
+    statKey: 'Forecast Horizon',
+    statValue: '12 mo',
     enabled: true,
   },
   {

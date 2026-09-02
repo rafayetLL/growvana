@@ -1,13 +1,15 @@
 import React from 'react';
 import Logo from './Logo.jsx';
-import { IconMail, IconTarget, IconCompass } from './icons.jsx';
+import { IconMail, IconTarget, IconCompass, IconChart } from './icons.jsx';
 
 // First screen the user sees. Picks which agent to work in:
-//   'email'   → the Email Campaign flow (PDF blueprint or Foundation).
-//   'meta_ad' → the Meta Ad Agent (self-serves via ad-account creds / PDF;
-//               no Foundation step required).
-//   'pdp'     → the PDP Agent (one product per thread; no Foundation session backs
-//               it, so its setup form asks for a Blueprint PDF or a project id).
+//   'email'    → the Email Campaign flow (PDF blueprint or Foundation).
+//   'meta_ad'  → the Meta Ad Agent (self-serves via ad-account creds / PDF;
+//                no Foundation step required).
+//   'pdp'      → the PDP Agent (one product per thread; no Foundation session backs
+//                it, so its setup form asks for a Blueprint PDF or a project id).
+//   'forecast' → the Forecast Agent (one continuous forecasting chat per thread;
+//                files attach by URL; no Foundation session is read in v1).
 export default function CampaignChooser({ onSelect }) {
   return (
     <div className="min-h-screen bg-ink-50 dark:bg-slate-950 flex flex-col">
@@ -16,7 +18,7 @@ export default function CampaignChooser({ onSelect }) {
       </div>
 
       <div className="flex-1 flex items-center justify-center px-6 py-10">
-        <div className="w-full max-w-[1140px]">
+        <div className="w-full max-w-[1400px]">
           <div className="text-center mb-10">
             <h1 className="text-[28px] md:text-[34px] font-semibold text-ink-900 dark:text-slate-100 leading-tight">
               What do you want to build?
@@ -26,7 +28,7 @@ export default function CampaignChooser({ onSelect }) {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
             <button
               type="button"
               onClick={() => onSelect?.('email')}
@@ -81,6 +83,25 @@ export default function CampaignChooser({ onSelect }) {
               </p>
               <div className="mt-5 inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-violet-600 text-white text-[13px] font-medium group-hover:bg-violet-700 transition">
                 Audit a Product Page →
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onSelect?.('forecast')}
+              className="group text-left bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-800 rounded-2xl p-6 hover:border-sky-400 dark:hover:border-sky-500/60 hover:shadow-md transition"
+            >
+              <div className="h-11 w-11 rounded-xl bg-sky-50 dark:bg-sky-500/15 text-sky-600 dark:text-sky-300 grid place-items-center">
+                <IconChart width={20} height={20} />
+              </div>
+              <h2 className="mt-4 text-[18px] font-semibold text-ink-900 dark:text-slate-100">
+                Sales Forecast
+              </h2>
+              <p className="mt-1.5 text-[13px] text-ink-500 dark:text-slate-400 leading-relaxed">
+                Forecast a 1P Vendor Central brand from its real files. Attach sales exports and PO history by URL, agree on the plan in chat, and receive verified Excel workbooks in the conversation.
+              </p>
+              <div className="mt-5 inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-sky-600 text-white text-[13px] font-medium group-hover:bg-sky-700 transition">
+                Start a Forecast →
               </div>
             </button>
           </div>
