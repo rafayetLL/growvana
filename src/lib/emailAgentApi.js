@@ -112,6 +112,7 @@ export async function* streamEmailAgent({
   thread_id,
   user_message,
   gap_answers,
+  attachment_urls,
   email_assets,
   webhook_request,
   signal,
@@ -119,6 +120,14 @@ export async function* streamEmailAgent({
   const body = { email_request: { thread_id } };
   if (user_message !== undefined) body.email_request.user_message = user_message;
   if (gap_answers !== undefined) body.email_request.gap_answers = gap_answers;
+  // `attachment_urls` is a file the user attached for CONTEXT — a brief, a
+  // competitor mail, a screenshot. Sent only on the turn it was attached: the
+  // backend keeps it on the thread for the life of the session, so a later
+  // turn re-sending the same URL gets the same file back, not a second one.
+  // Distinct from `email_assets` below, which is imagery embedded IN the mail.
+  if (attachment_urls && attachment_urls.length > 0) {
+    body.email_request.attachment_urls = attachment_urls;
+  }
   // `email_assets` carries ONLY assets uploaded THIS turn. The backend's
   // `merge_email_assets` reducer accumulates them onto its persisted list,
   // and `cmo_email_assets` is set from the same fresh list so the CMO sees

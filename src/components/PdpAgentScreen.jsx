@@ -2297,9 +2297,25 @@ function SpecialistStub({ sel }) {
 //
 // **The sandbox differs by WHO WROTE the document, and that is the whole rule.**
 //
-// - `scripts={false}` (default) → `sandbox="allow-same-origin"`. The audit and the
-//   strategy are written by a MODEL. They carry inline CSS only and no script
-//   should ever run in them, so none is allowed to.
+// - `scripts={false}` (default) → `sandbox="allow-same-origin allow-popups
+//   allow-popups-to-escape-sandbox"`. The audit and the strategy are written by a
+//   MODEL. They carry inline CSS only and no script should ever run in them, so
+//   none is allowed to.
+//
+//   **The two popup tokens are what make a link in these documents WORK.** The
+//   audit's "The page we audited" panel links out to the user's own product page,
+//   and with `allow-same-origin` alone that anchor is a dead control: the frame
+//   blocks the navigation and the click does nothing at all, visibly a link and
+//   silently inert. `allow-popups` lets a `target="_blank"` anchor open, and
+//   `allow-popups-to-escape-sandbox` stops the opened tab inheriting this frame's
+//   restrictions — without it the user's product page loads sandboxed and broken.
+//   This pairs with `evidence_link` in `pdp_audit_builder.py`; reverting either
+//   half alone puts a dead control back on the page.
+//
+//   **Granting popups is safe here ONLY because no script runs.** Nothing in the
+//   document can navigate or open anything on its own — a popup requires a real
+//   user click on a real anchor. That stops being true the moment `allow-scripts`
+//   is added, which is the next bullet's rule and must not be relaxed.
 // - `scripts` → `sandbox="allow-scripts"`. The Scout page is the one document here
 //   built DETERMINISTICALLY in Python (`pdp_scout_builder` /
 //   `pdp_scout_pdp_builder`), and its per-product Description / Specifications tabs
@@ -2327,7 +2343,11 @@ function HtmlDoc({ html, title, scripts = false }) {
         <iframe
           title={title}
           srcDoc={html}
-          sandbox={scripts ? 'allow-scripts' : 'allow-same-origin'}
+          sandbox={
+            scripts
+              ? 'allow-scripts'
+              : 'allow-same-origin allow-popups allow-popups-to-escape-sandbox'
+          }
           className="block w-full h-full"
           style={{ border: 0 }}
         />

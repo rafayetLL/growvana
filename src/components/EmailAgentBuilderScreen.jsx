@@ -214,7 +214,7 @@ export default function EmailAgentBuilderScreen({
     });
   }, [messages, gapQuestions, streamingText, typing]);
 
-  async function runStream({ user_message, gap_answers, fresh_assets }) {
+  async function runStream({ user_message, gap_answers, attachment_urls, fresh_assets }) {
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -353,6 +353,7 @@ export default function EmailAgentBuilderScreen({
         thread_id: threadId,
         user_message,
         gap_answers,
+        attachment_urls,
         email_assets: fresh_assets,
         webhook_request,
         signal: controller.signal,
@@ -411,9 +412,12 @@ export default function EmailAgentBuilderScreen({
     }
   }
 
-  function handleSendText(text, _attachments, freshAssets) {
-    setMessages((prev) => [...prev, { role: 'user', content: text, time: Date.now() }]);
-    runStream({ user_message: text, fresh_assets: freshAssets });
+  function handleSendText(text, attachments, freshAssets) {
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: text, attachments, time: Date.now() },
+    ]);
+    runStream({ user_message: text, attachment_urls: attachments, fresh_assets: freshAssets });
   }
 
   function handleSubmitGapAnswers(answers) {
