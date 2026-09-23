@@ -201,6 +201,8 @@
 //   this webhook alone. So it needs a per-set/per-slot MERGE, unlike the content
 //   stage — which is a plain assignment, like the scout's.
 
+import { apiKeyHeader, jsonHeaders } from './apiKey';
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 // Backend errors carry `{ error, message, details }` and the `message` is already
@@ -258,7 +260,7 @@ export async function initPdpAgent({
 
   const res = await fetch(`${API_BASE}/pdp-agent/init`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders(),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -314,6 +316,8 @@ export async function initPdpAgentWithPdf({
 
   const res = await fetch(`${API_BASE}/pdp-agent/init_with_pdf`, {
     method: 'POST',
+    // Key only — the browser sets Content-Type itself here, boundary included.
+    headers: apiKeyHeader(),
     body: form,
   });
   if (!res.ok) {
@@ -355,7 +359,7 @@ export async function* streamPdpAgent({
 
   const res = await fetch(`${API_BASE}/pdp-agent/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders(),
     body: JSON.stringify(body),
     signal,
   });

@@ -13,6 +13,7 @@ import {
   IconTarget,
   IconCompass,
   IconChart,
+  IconBook,
 } from './icons.jsx';
 import { useTheme } from '../lib/theme.js';
 
@@ -135,6 +136,16 @@ export default function Sidebar({
       </nav>
 
       <div className="mt-auto px-2 pb-3 flex flex-col gap-0.5">
+        {/* Documentation sits above the utility row, not in the agent list: it
+            describes the agents rather than being one, and it is reachable from
+            every flow (including the standalone ones) so it can't hang off a
+            project session. */}
+        <NavItem
+          icon={<IconBook />}
+          label="Documentation"
+          active={activeView === 'documentation'}
+          onClick={() => onSelectView?.('documentation')}
+        />
         <button
           type="button"
           onClick={toggleTheme}

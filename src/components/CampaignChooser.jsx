@@ -1,6 +1,6 @@
 import React from 'react';
 import Logo from './Logo.jsx';
-import { IconMail, IconTarget, IconCompass, IconChart } from './icons.jsx';
+import { IconMail, IconTarget, IconCompass, IconChart, IconBook } from './icons.jsx';
 
 // First screen the user sees. Picks which agent to work in:
 //   'email'    → the Email Campaign flow (PDF blueprint or Foundation).
@@ -10,11 +10,22 @@ import { IconMail, IconTarget, IconCompass, IconChart } from './icons.jsx';
 //                it, so its setup form asks for a Blueprint PDF or a project id).
 //   'forecast' → the Forecast Agent (one continuous forecasting chat per thread;
 //                files attach by URL; no Foundation session is read in v1).
-export default function CampaignChooser({ onSelect }) {
+export default function CampaignChooser({ onSelect, onOpenDocs }) {
   return (
     <div className="min-h-screen bg-ink-50 dark:bg-slate-950 flex flex-col">
       <div className="h-14 px-6 flex items-center border-b border-ink-100 dark:border-slate-800 bg-white dark:bg-slate-900">
         <Logo />
+        {/* Docs are reachable before a project exists — someone deciding which
+            agent to open is exactly who needs to read what one does. */}
+        {onOpenDocs && (
+          <button
+            type="button"
+            onClick={onOpenDocs}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-ink-200 dark:border-slate-700 px-2.5 py-1.5 text-[12.5px] font-medium text-ink-600 dark:text-slate-300 hover:bg-ink-50 dark:hover:bg-slate-800 hover:text-ink-900 dark:hover:text-slate-100 transition"
+          >
+            <IconBook width={14} height={14} /> Documentation
+          </button>
+        )}
       </div>
 
       <div className="flex-1 flex items-center justify-center px-6 py-10">

@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import Logo from './Logo.jsx';
-import { IconAttach, IconZap } from './icons.jsx';
+import { IconAttach, IconZap, IconBook } from './icons.jsx';
 
 // Landing page — two large cards. PDF upload bypasses Foundation entirely
 // by POSTing to /email-agent/init_with_pdf; the second card hands off to
@@ -9,6 +9,7 @@ export default function EmailLanding({
   onSelectFoundation,
   onUploadPdf,
   onBack,
+  onOpenDocs,
   uploading,
   error,
 }) {
@@ -38,6 +39,15 @@ export default function EmailLanding({
             className="text-[13px] text-ink-500 dark:text-slate-400 hover:text-ink-700 dark:hover:text-slate-200 transition disabled:opacity-60"
           >
             ← Back
+          </button>
+        )}
+        {onOpenDocs && (
+          <button
+            type="button"
+            onClick={onOpenDocs}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-ink-200 dark:border-slate-700 px-2.5 py-1.5 text-[12.5px] font-medium text-ink-600 dark:text-slate-300 hover:bg-ink-50 dark:hover:bg-slate-800 hover:text-ink-900 dark:hover:text-slate-100 transition"
+          >
+            <IconBook width={14} height={14} /> Documentation
           </button>
         )}
       </div>

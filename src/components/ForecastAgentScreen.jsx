@@ -16,6 +16,7 @@ import {
   forecastOutputUrl,
   FORECAST_THREAD_ID_RE,
 } from '../lib/forecastAgentApi.js';
+import { apiKeyHeader } from '../lib/apiKey.js';
 
 // Forecast Agent screen — the sixth agent, first on the Claude Agent SDK
 // rather than LangGraph. Modeled on EmailAgentSdkScreen.jsx (the SDK wire
@@ -955,7 +956,7 @@ function FilePreview({ output, threadId, busy, refreshTick }) {
     setError(null);
     (async () => {
       try {
-        const res = await fetch(downloadUrl);
+        const res = await fetch(downloadUrl, { headers: apiKeyHeader() });
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         if (kind === 'sheet') {
           const buf = await res.arrayBuffer();

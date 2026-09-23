@@ -59,6 +59,8 @@
 // step_metadata) do NOT come over this stream — they arrive via the
 // webhook relay. Subscribe with `subscribeProgress(thread_id)`.
 
+import { apiKeyHeader, jsonHeaders } from './apiKey';
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 /**
@@ -76,7 +78,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL;
 export async function initEmailAgent({ thread_id, foundation_thread_id }) {
   const res = await fetch(`${API_BASE}/email-agent/init`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders(),
     body: JSON.stringify({ thread_id, foundation_thread_id }),
   });
   if (!res.ok) {
@@ -99,6 +101,8 @@ export async function initEmailAgentWithPdf({ thread_id, pdfFile }) {
   form.append('pdf_file', pdfFile);
   const res = await fetch(`${API_BASE}/email-agent/init_with_pdf`, {
     method: 'POST',
+    // Key only — the browser sets Content-Type itself here, boundary included.
+    headers: apiKeyHeader(),
     body: form,
   });
   if (!res.ok) {
@@ -140,7 +144,7 @@ export async function* streamEmailAgent({
 
   const res = await fetch(`${API_BASE}/email-agent/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders(),
     body: JSON.stringify(body),
     signal,
   });

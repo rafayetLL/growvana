@@ -36,6 +36,8 @@
 //   - { type: 'done', subtype, result, session_id, total_cost_usd, num_turns }
 //   - { type: 'error', message }
 
+import { apiKeyHeader } from './apiKey';
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 export async function* streamEmailAgentSdk({
@@ -56,7 +58,8 @@ export async function* streamEmailAgentSdk({
 
   const res = await fetch(`${API_BASE}/email-agent-sdk/stream`, {
     method: 'POST',
-    // No Content-Type header — the browser sets the multipart boundary.
+    // Key only — no Content-Type header, the browser sets the multipart boundary.
+    headers: apiKeyHeader(),
     body: form,
     signal,
   });

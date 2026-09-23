@@ -8,6 +8,7 @@ import EmailAgentBuilderScreen from './components/EmailAgentBuilderScreen.jsx';
 import MetaAdAgentBuilderScreen from './components/MetaAdAgentBuilderScreen.jsx';
 import PdpAgentScreen from './components/PdpAgentScreen.jsx';
 import ForecastAgentScreen from './components/ForecastAgentScreen.jsx';
+import DocsScreen from './components/DocsScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import { initChat } from './lib/api.js';
 import { initEmailAgentWithPdf } from './lib/emailAgentApi.js';
@@ -87,6 +88,12 @@ export default function App() {
   // for new API calls.
   const [overrideThreadId, setOverrideThreadId] = useState('');
 
+  // Documentation opens OVER whatever flow is running rather than replacing it:
+  // the flow below stays mounted (hidden), so a chat, a half-built draft or an
+  // in-flight stream is exactly where it was when the reader closes the docs.
+  // Every screen's sidebar routes the 'documentation' slug here.
+  const [showDocs, setShowDocs] = useState(false);
+
   // Reset everything back to the landing page ("New project" button in Sidebar).
   function handleNewProject() {
     setStage('landing');
@@ -100,6 +107,18 @@ export default function App() {
     setInitProgress({});
     setOverrideThreadId('');
     setView('foundations');
+    setShowDocs(false);
+  }
+
+  // Sidebar nav, shared by every flow. 'documentation' is intercepted here
+  // instead of becoming a view, because it has to be reachable from the
+  // standalone flows too — and those have no view state to route through.
+  function handleSidebar(slug) {
+    if (slug === 'documentation') {
+      setShowDocs(true);
+      return;
+    }
+    setView(viewFromSidebar(slug));
   }
 
   // CampaignChooser → route into the chosen flow.
@@ -197,6 +216,9 @@ export default function App() {
     }
   }
 
+  // The flow the reader is actually working in. Rendered by the component's
+  // return below, hidden (not unmounted) while the documentation is open.
+  function renderFlow() {
   if (stage === 'chat' && initResult) {
     const effectiveThreadId =
       overrideThreadId.trim() || initResult.thread_id;
@@ -206,7 +228,6 @@ export default function App() {
     // preserves component state (chat history, latest generation,
     // gap questions, in-flight streams, etc.) when the user toggles
     // between Foundations / Execution / Email Agent.
-    const handleSidebar = (slug) => setView(viewFromSidebar(slug));
 
     return (
       <>
@@ -308,7 +329,9 @@ export default function App() {
         onBack={handleNewProject}
         onSelectView={(slug) => {
           // No shared project session here; any non-meta nav target starts a
-          // fresh Email Campaign from the chooser/landing instead.
+          // fresh Email Campaign from the chooser/landing instead. Documentation
+          // is the exception — it opens over this flow and closes back into it.
+          if (slug === 'documentation') { setShowDocs(true); return; }
           if (slug !== 'meta_ad_agent') handleNewProject();
         }}
         hideFoundation
@@ -328,7 +351,9 @@ export default function App() {
         onBack={handleNewProject}
         onSelectView={(slug) => {
           // No shared project session here; any non-PDP nav target starts a fresh
-          // campaign from the chooser/landing instead.
+          // campaign from the chooser/landing instead. Documentation opens over
+          // this flow and closes back into it.
+          if (slug === 'documentation') { setShowDocs(true); return; }
           if (slug !== 'pdp_agent') handleNewProject();
         }}
         hideFoundation
@@ -347,7 +372,9 @@ export default function App() {
         foundationThreadId={forecastFoundationId}
         onSelectView={(slug) => {
           // No shared project session here; any non-forecast nav target starts
-          // a fresh campaign from the chooser/landing instead.
+          // a fresh campaign from the chooser/landing instead. Documentation
+          // opens over this flow and closes back into it.
+          if (slug === 'documentation') { setShowDocs(true); return; }
           if (slug !== 'forecast_agent') handleNewProject();
         }}
         hideFoundation
@@ -372,7 +399,12 @@ export default function App() {
 
   // Landing: first the campaign-type chooser, then the chosen campaign's entry.
   if (campaign === null) {
-    return <CampaignChooser onSelect={handlePickCampaign} />;
+    return (
+      <CampaignChooser
+        onSelect={handlePickCampaign}
+        onOpenDocs={() => setShowDocs(true)}
+      />
+    );
   }
 
   return (
@@ -380,8 +412,49 @@ export default function App() {
       onSelectFoundation={() => setStage('onboarding')}
       onUploadPdf={startWithPdf}
       onBack={() => setCampaign(null)}
+      onOpenDocs={() => setShowDocs(true)}
       uploading={loading}
       error={error}
     />
+  );
+  }
+
+  // Which project name and nav shape the docs sidebar should mirror. The
+  // standalone flows and the PDF flow have no Foundations step, so the tab is
+  // hidden there exactly as it is on the screen underneath.
+  const docsProjectName =
+    (stage === 'chat' && initResult?.company_name) ||
+    (stage === 'meta_ad' && 'Meta Ad Campaign') ||
+    (stage === 'pdp' && 'Product Page Audit') ||
+    (stage === 'forecast' && 'Sales Forecast') ||
+    'Untitled project';
+  const docsHideFoundation = stage !== 'chat' || pdfFlow;
+  // Before a project exists there is no agent nav to show, so the docs stand on
+  // their own — logo, a back button, and the pages.
+  const docsStandalone = stage === 'landing' || stage === 'onboarding';
+
+  return (
+    <>
+      <div style={{ display: showDocs ? 'none' : 'contents' }}>{renderFlow()}</div>
+      {showDocs && (
+        <DocsScreen
+          projectName={docsProjectName}
+          hideFoundation={docsHideFoundation}
+          standalone={docsStandalone}
+          onBack={() => setShowDocs(false)}
+          onNewProject={() => {
+            setShowDocs(false);
+            handleNewProject();
+          }}
+          onSelectView={(slug) => {
+            if (slug === 'documentation') return;
+            setShowDocs(false);
+            // Only a project session has views to switch between; the standalone
+            // flows just close back into the single screen they were on.
+            if (stage === 'chat') handleSidebar(slug);
+          }}
+        />
+      )}
+    </>
   );
 }

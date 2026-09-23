@@ -83,6 +83,8 @@
 // public-URL design — `getForecastOutputPreview` stays commented out below;
 // restore only alongside that GET route existing on the backend.)
 
+import { apiKeyHeader, jsonHeaders } from './apiKey';
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 export const FORECAST_THREAD_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -115,7 +117,7 @@ async function throwFromResponse(res, label) {
 export async function initForecastThread({ thread_id, foundation_thread_id }) {
   const res = await fetch(`${API_BASE}/forecast-agent/init`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders(),
     body: JSON.stringify({ thread_id, foundation_thread_id }),
   });
   if (!res.ok) await throwFromResponse(res, 'forecast-agent init failed');
@@ -123,7 +125,7 @@ export async function initForecastThread({ thread_id, foundation_thread_id }) {
 }
 
 async function getJson(url, label) {
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: apiKeyHeader() });
   if (!res.ok) await throwFromResponse(res, label);
   return res.json();
 }
@@ -153,6 +155,16 @@ export function listForecastOutputs(thread_id) {
 // Reversed 2026-09-02 (again): outputs are served BY FILE NAME off the
 // backend, not off a permanent cloud URL — this is the one place a file's
 // bytes can be fetched from.
+//
+// **BLOCKS THE MERGE OF `213-forecasting-agent`.** This returns a bare URL, and
+// `ForecastAgentScreen` hands it to `<a href download>` and `<iframe src>` — neither
+// of which can carry an `X-API-KEY` header. The forecast routes are not registered in
+// `api/v1/router.py` yet, so nothing is broken TODAY; the day that branch merges and
+// the router guards them, every forecast download link and the PDF preview start
+// returning 401 with nothing on screen explaining why. Whoever merges 213 has to pick
+// one first: fetch the bytes with `apiKeyHeader()` and hand the element an object URL,
+// or let that one route accept the key another way. Adding the guard without doing so
+// is a silent break. See issue #236.
 export function forecastOutputUrl(thread_id, file_name) {
   return `${API_BASE}/forecast-agent/threads/${encodeURIComponent(thread_id)}/outputs/${encodeURIComponent(file_name)}`;
 }
@@ -174,7 +186,7 @@ export async function* streamForecastTurn({
 }) {
   const res = await fetch(`${API_BASE}/forecast-agent/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders(),
     body: JSON.stringify({
       thread_id,
       user_message,

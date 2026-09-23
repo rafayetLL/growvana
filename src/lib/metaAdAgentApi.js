@@ -67,6 +67,8 @@
 // The competitor lens node fetches the real competitor ads from WinningHunter
 // itself on its first run (no /init prefetch).
 
+import { apiKeyHeader, jsonHeaders } from './apiKey';
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 /**
@@ -88,7 +90,7 @@ export async function initMetaAdAgent({
   // only). JSON.stringify drops undefined values, so the keys are simply absent.
   const res = await fetch(`${API_BASE}/meta-ad-agent/init`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders(),
     body: JSON.stringify({
       thread_id,
       foundation_thread_id,
@@ -131,6 +133,8 @@ export async function initMetaAdAgentWithPdf({
   form.append('pdf_file', pdfFile);
   const res = await fetch(`${API_BASE}/meta-ad-agent/init_with_pdf`, {
     method: 'POST',
+    // Key only — the browser sets Content-Type itself here, boundary included.
+    headers: apiKeyHeader(),
     body: form,
   });
   if (!res.ok) {
@@ -163,7 +167,7 @@ export async function* streamMetaAdAgent({
 
   const res = await fetch(`${API_BASE}/meta-ad-agent/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders(),
     body: JSON.stringify(body),
     signal,
   });

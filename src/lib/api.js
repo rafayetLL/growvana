@@ -3,6 +3,8 @@
 // Vite proxy, no relative-path fallback. The browser hits the backend
 // directly; CORS on the backend handles the cross-origin call.
 
+import { jsonHeaders } from './apiKey';
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
 /**
@@ -21,7 +23,7 @@ export async function initChat({ thread_id, company_url, file_urls, webhook_requ
 
   const res = await fetch(`${API_BASE}/chat/init`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders(),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -51,7 +53,7 @@ export async function* streamChat({ thread_id, user_message, gap_answers, file_u
 
   const res = await fetch(`${API_BASE}/chat/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders(),
     body: JSON.stringify(body),
     signal,
   });
