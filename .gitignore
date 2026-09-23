@@ -18,6 +18,15 @@ node_modules
 !.yarn/sdks
 !.yarn/versions
 
+# Lockfiles — bun.lock is the ONE lockfile this repo tracks.
+# npm prunes other platforms' optional binaries out of package-lock.json (npm/cli#4828),
+# so a lockfile written on macOS carries only the darwin-arm64 rollup and esbuild builds
+# and `npm ci` on the linux build box dies with
+# "Cannot find module @rollup/rollup-linux-x64-gnu". Keeping it untracked is what makes
+# Cloudflare install with bun, which resolves the binaries for the platform it is on.
+# This was fixed once in 4b4a03a and silently undone when 846de4b re-added the file.
+package-lock.json
+
 # Build outputs
 dist
 dist-ssr
