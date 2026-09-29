@@ -5,6 +5,8 @@ import GapQuestions from './GapQuestions.jsx';
 import { ChatMessageItem } from './MessageRenderers.jsx';
 import { initMetaAdAgent, initMetaAdAgentWithPdf, streamMetaAdAgent } from '../lib/metaAdAgentApi.js';
 import { buildWebhookRequest, subscribeProgress } from '../lib/webhookBus.js';
+import BlueprintPicker from './BlueprintPicker.jsx';
+import { useNewThread, useThreadNav, useThreadResume } from '../lib/threadNav.jsx';
 import {
   IconArrowLeft,
   IconTarget,
@@ -127,8 +129,12 @@ const ACCOUNT_SLOTS = [
 const ACCOUNTS = ACCOUNT_SLOTS.filter((a) => a.aaid && a.token && a.tenant_id);
 // The "No account" tab: init with NEITHER tenant_id nor account_id (the backend
 // takes them as an optional PAIR). Create path only — tune has no ads to pick —
-// and the Blueprint PDF becomes REQUIRED (it is the only brand-context source).
-const NO_ACCOUNT_TAB = { label: 'No account · PDF only', noAccount: true };
+// and brand context becomes REQUIRED, since no ad account supplies any.
+//
+// It said "PDF only" until the Blueprint picker landed, and that is no longer true:
+// a Foundation thread serves as brand context here just as well as an upload, so
+// the label must not keep sending people off to export a PDF they do not need.
+const NO_ACCOUNT_TAB = { label: 'No account · bring a blueprint', noAccount: true };
 const ACCOUNT_TABS = [...ACCOUNTS, NO_ACCOUNT_TAB];
 // Typed-credential gate RETIRED in favor of the account tabs — kept for restore.
 // const ACCOUNT_MISMATCH_MSG =
@@ -315,7 +321,11 @@ export default function MetaAdAgentBuilderScreen({
 
   const [phase, setPhase] = useState('setup'); // 'setup' | 'ready'
   const [path, setPath] = useState('tune_existing_ads');
-  const [pdfFile, setPdfFile] = useState(null); // Blueprint PDF → init_with_pdf (REQUIRED on the No-account tab)
+  const [pdfFile, setPdfFile] = useState(null); // Blueprint PDF → init_with_pdf
+  // A Foundation thread chosen (or typed) as this campaign's brand context. Before
+  // this, the No-account entry accepted a PDF and nothing else, so a Blueprint that
+  // already existed on a Foundation thread had to be re-exported to be usable.
+  const [pickedBlueprintId, setPickedBlueprintId] = useState('');
   // Which account tab is selected — an index into ACCOUNT_TABS (last = "No account").
   const [accountIdx, setAccountIdx] = useState(0);
   // Typed-credential gate RETIRED in favor of the account tabs — kept for restore.
@@ -359,6 +369,108 @@ export default function MetaAdAgentBuilderScreen({
   const abortRef = useRef(null);
   const scrollRef = useRef(null);
 
+  // ---------------------------------------------------------------------------
+  // Reopening a past campaign.
+  //
+  // `GET /threads/meta-ad/{id}` hands back the same keys the `done` frame carries,
+  // plus the ad picker's cards — projected server-side from the account read this
+  // thread already stored, by the same function `/init` uses. So reopening restores
+  // the ads to choose from as well as the conversation and the four artifacts.
+  // ---------------------------------------------------------------------------
+  const { bumpThreads } = useThreadNav();
+  // The thread actually on screen. Starts as the one the app handed us and changes
+  // when a past campaign is reopened, so every turn below sends the right id.
+  const [openThreadId, setOpenThreadId] = useState(threadId);
+  useEffect(() => setOpenThreadId(threadId), [threadId]);
+
+  function applyThread(t) {
+    setOpenThreadId(t.thread_id);
+    setPath(t.path || 'tune_existing_ads');
+    setMessages(
+      (t.messages || []).map((m) => ({ role: m.role, content: m.content, time: null })),
+    );
+    setGapQuestions((t.questions || []).filter((q) => !(q.answers || []).length));
+    setAds(t.ads || []);
+    // Both, and they are different things: `selected` is what is ticked in the
+    // picker, `confirmed` is what has actually been sent to be diagnosed. On a
+    // reopened thread every selection has been sent — that is what put it on the
+    // thread — so they are the same list, and the composer stays unlocked.
+    setSelectedAdIds(t.selected_ad_ids || []);
+    setConfirmedAdIds(t.selected_ad_ids || []);
+    setAdsPanelOpen((t.ads || []).length > 0);
+
+    const diags = (t.diagnosis && t.diagnosis.diagnoses) || [];
+    setLatestDiagnoses(diags);
+    if (diags.length) setCanvasSel(defaultDiagnosisSel(diags));
+    setLatestCompetitorLens(t.competitor_lens || null);
+    const strats = (t.strategy && t.strategy.strategies) || [];
+    setLatestStrategy(strats);
+    if (strats.length) setStrategyCanvasSel(defaultDiagnosisSel(strats));
+    setLatestCreative(t.creative || null);
+
+    // Land on the furthest thing this campaign got to, so reopening shows the work
+    // rather than an empty first tab.
+    setArtifactSel(
+      t.creative
+        ? 'creative'
+        : strats.length
+          ? 'strategy'
+          : t.competitor_lens
+            ? 'competitor_lens'
+            : 'diagnosis',
+    );
+    setInitError(null);
+    setTurnError(null);
+    setPhase('ready');
+  }
+
+  const {
+    loading: resumeLoading,
+    error: resumeReadError,
+    notFound: resumeNotFound,
+    markLoaded,
+  } = useThreadResume('meta-ad', {
+    apply: applyThread,
+    // Only restore over the setup form — never over a campaign already on screen.
+    shouldRecall: () => phase === 'setup',
+  });
+  // A thread that is GONE and a read that FAILED say different things — one is
+  // final, the other is worth another go.
+  const resumeError =
+    resumeReadError ||
+    (resumeNotFound ? 'That campaign is no longer available.' : null);
+
+  // + New on this agent's thread list: back to the setup form, so a second campaign
+  // can be started without leaving the project. Nothing is sent to the backend —
+  // a Meta Ad thread only exists once init has run.
+  useNewThread('meta-ad', () => {
+    abortRef.current?.abort();
+    setOpenThreadId(threadId);
+    setPhase('setup');
+    setPath('tune_existing_ads');
+    setPdfFile(null);
+    setPickedBlueprintId('');
+    setAccountIdx(0);
+    setInitError(null);
+    setMessages([]);
+    setGapQuestions([]);
+    setAds([]);
+    setSelectedAdIds([]);
+    setConfirmedAdIds([]);
+    setStreamingText(null);
+    setTyping(false);
+    setTurnError(null);
+    setDraftingAgent(null);
+    setActivity([]);
+    setLatestDiagnoses([]);
+    setLatestCompetitorLens(null);
+    setLatestStrategy([]);
+    setLatestCreative(null);
+    setArtifactSel('diagnosis');
+    setCanvasSel('');
+    setStrategyCanvasSel('');
+  });
+
   const busy = typing || streamingText !== null;
   const showAdsPanel = path === 'tune_existing_ads' && ads.length > 0;
   // Tune path: the chat input appears once the user clicks "Diagnose" (ads get
@@ -401,9 +513,12 @@ export default function MetaAdAgentBuilderScreen({
         );
         return;
       }
-      if (!pdfFile) {
+      // Brand context has to come from somewhere, and a PDF is no longer the only
+      // somewhere: a Foundation Blueprint that already exists serves just as well,
+      // and re-exporting one to a PDF to satisfy this screen was busywork.
+      if (!pdfFile && !pickedBlueprintId) {
         setInitError(
-          'The No-account option needs a Brand Blueprint PDF for brand context — upload one to continue.'
+          'The No-account option needs brand context — pick a Foundation Blueprint or upload a Blueprint PDF to continue.'
         );
         return;
       }
@@ -432,11 +547,16 @@ export default function MetaAdAgentBuilderScreen({
           ? {}
           : { tenant_id: account.tenant_id, account_id: account.aaid }),
       };
-      // A selected PDF supplies brand context (skips phase-1); otherwise pull it
-      // from the phase-1 checkpoint via foundation_thread_id.
+      // A selected PDF supplies brand context (skips phase-1); otherwise the
+      // Blueprint is read from a Foundation thread. A PICKED thread wins over this
+      // session's own, because choosing one is deliberate where the session's id
+      // arrives silently on a prop.
       const res = pdfFile
         ? await initMetaAdAgentWithPdf({ ...common, pdfFile })
-        : await initMetaAdAgent({ ...common, foundation_thread_id: threadId });
+        : await initMetaAdAgent({
+            ...common,
+            foundation_thread_id: pickedBlueprintId || threadId,
+          });
       if (res.path === 'create_ads') {
         setMessages(res.ai_message ? [{ role: 'assistant', content: res.ai_message, time: Date.now() }] : []);
         setGapQuestions(res.questions || []);
@@ -453,6 +573,10 @@ export default function MetaAdAgentBuilderScreen({
         ]);
       }
       setPhase('ready');
+      // The thread exists from here on, so the sidebar can list it and a refresh
+      // can find it again. On SUCCESS only — a refused init leaves no thread.
+      markLoaded(threadId);
+      bumpThreads();
     } catch (e) {
       setInitError(e.message || 'Failed to start the Meta Ad Agent.');
     } finally {
@@ -473,7 +597,7 @@ export default function MetaAdAgentBuilderScreen({
     const webhook_request = buildWebhookRequest({
       task_id: taskId,
       event_type: 'workflow.meta_ad_agent',
-      data: { thread_id: threadId },
+      data: { thread_id: openThreadId },
     });
     let sub = null;
     if (webhook_request) {
@@ -523,7 +647,8 @@ export default function MetaAdAgentBuilderScreen({
     let lastDrafting = null; // dedupe the SSE node-start activity across loop re-entries
     try {
       for await (const ev of streamMetaAdAgent({
-        thread_id: threadId,
+        // The thread ACTUALLY on screen, which is the reopened one after a reopen.
+        thread_id: openThreadId,
         user_message,
         gap_answers,
         selected_ad_ids,
@@ -572,6 +697,8 @@ export default function MetaAdAgentBuilderScreen({
             nextArtifact = 'creative';
           }
           if (nextArtifact) setArtifactSel(nextArtifact);
+          // This thread has moved to the top of the sidebar's list.
+          bumpThreads();
         } else if (ev.type === 'error') {
           setTurnError(ev.message || 'Something went wrong this turn.');
         }
@@ -674,8 +801,18 @@ export default function MetaAdAgentBuilderScreen({
           current={artifactSel}
         />
 
-        {phase === 'setup' ? (
+        {phase === 'setup' && resumeLoading ? (
+          // Covers the setup form rather than sitting beside it: that form starts a
+          // NEW campaign, and offering it while a past one loads invites someone to
+          // open a second thread by accident.
+          <div className="flex flex-1 items-center justify-center">
+            <p className="text-[13px] text-ink-500 dark:text-slate-400">
+              Reopening your campaign…
+            </p>
+          </div>
+        ) : phase === 'setup' ? (
           <SetupView
+            resumeError={resumeError}
             path={path}
             setPath={setPath}
             accountTabs={ACCOUNT_TABS}
@@ -686,6 +823,8 @@ export default function MetaAdAgentBuilderScreen({
             onStart={handleStart}
             pdfFile={pdfFile}
             setPdfFile={setPdfFile}
+            pickedBlueprintId={pickedBlueprintId}
+            setPickedBlueprintId={setPickedBlueprintId}
           />
         ) : (
           <div className="flex-1 flex min-h-0">
@@ -885,6 +1024,10 @@ function Stepper({ doneMap, draftingStep, current }) {
 function SetupView({
   path, setPath, accountTabs, accountIdx, setAccountIdx,
   initLoading, initError, onStart, pdfFile, setPdfFile,
+  pickedBlueprintId, setPickedBlueprintId,
+  // Why reopening a past campaign did not work. Shown above the form, never
+  // instead of it — a failed reopen must not leave someone with nowhere to go.
+  resumeError,
 }) {
   const noAccount = !!accountTabs[accountIdx]?.noAccount;
   function pickTab(i) {
@@ -895,6 +1038,11 @@ function SetupView({
   return (
     <div className="flex-1 overflow-y-auto thin-scroll bg-canvas dark:bg-slate-950">
       <div className="max-w-[760px] mx-auto px-6 py-10">
+        {resumeError && (
+          <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300">
+            {resumeError} You can start a new campaign below.
+          </div>
+        )}
         <div className="font-display text-[27px] font-semibold text-navy-900 dark:text-slate-100">
           Tune an existing ad, or build something new
         </div>
@@ -974,11 +1122,46 @@ function SetupView({
               />
             </Field>
             */}
-            <Field label={noAccount ? 'Brand Blueprint PDF (required — no account connected)' : 'Brand Blueprint PDF (optional — overrides phase-1)'}>
+            {/* TWO sources of brand context, both offered. The No-account entry used
+                to take a PDF and nothing else, which meant re-exporting a Blueprint
+                that already existed on a Foundation thread just to satisfy this
+                form. The picker reads that thread directly, and any Foundation
+                thread id can be typed into it. */}
+            <Field
+              label={
+                noAccount
+                  ? 'Brand context (required — no account connected)'
+                  : 'Use a Foundation Blueprint (optional — overrides this project’s)'
+              }
+            >
+              <BlueprintPicker
+                selectedId={pickedBlueprintId}
+                onPick={(id) => {
+                  // Plain set, never a toggle: this fires per keystroke from the
+                  // free-text field as well as from the list.
+                  setPickedBlueprintId(id);
+                  // A PDF wins on the backend, so picking a Blueprint has to drop
+                  // it rather than leave a choice on screen that is not used.
+                  if (id) setPdfFile(null);
+                }}
+              />
+            </Field>
+
+            <div className="my-3 flex items-center gap-3 text-[11px] uppercase tracking-wider text-navy-400 dark:text-slate-500">
+              <span className="h-px flex-1 bg-navy-100 dark:bg-slate-700" />
+              or
+              <span className="h-px flex-1 bg-navy-100 dark:bg-slate-700" />
+            </div>
+
+            <Field label="Brand Blueprint PDF">
               <input
                 type="file"
                 accept="application/pdf,.pdf"
-                onChange={(e) => setPdfFile(e.target.files?.[0] || null)}
+                onChange={(e) => {
+                  const file = e.target.files?.[0] || null;
+                  setPdfFile(file);
+                  if (file) setPickedBlueprintId('');
+                }}
                 className="w-full text-[12.5px] text-navy-700 dark:text-slate-200 file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-meta-600 file:text-white file:text-[12.5px] file:cursor-pointer hover:file:bg-meta-700"
               />
               {pdfFile && (

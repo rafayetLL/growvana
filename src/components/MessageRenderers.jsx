@@ -208,6 +208,24 @@ function formatTime(ts) {
 }
 
 export function ChatMessageItem({ message, streaming }) {
+  // Not a speaker. A long thread gets compacted, which DELETES its earliest turns
+  // and leaves one note in their place — so a reopened conversation would otherwise
+  // start mid-sentence. Drawn as a divider, because rendering it as a bubble would
+  // attribute the agent's own summary to whoever the bubble's shape suggests.
+  if (message.role === 'summary') {
+    return (
+      <div className="my-2 flex items-center gap-3">
+        <span className="h-px flex-1 bg-ink-200 dark:bg-slate-700" />
+        <span
+          className="max-w-[520px] text-center text-[11.5px] leading-relaxed text-ink-400 dark:text-slate-500"
+          title={message.content}
+        >
+          Earlier messages were summarised to keep this conversation going
+        </span>
+        <span className="h-px flex-1 bg-ink-200 dark:bg-slate-700" />
+      </div>
+    );
+  }
   if (message.role === 'assistant') {
     return (
       <div className="flex gap-3 max-w-[760px]">

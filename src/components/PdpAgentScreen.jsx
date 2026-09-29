@@ -5,8 +5,10 @@ import Sidebar from './Sidebar.jsx';
 import Composer from './Composer.jsx';
 import GapQuestions from './GapQuestions.jsx';
 import { ChatMessageItem } from './MessageRenderers.jsx';
+import BlueprintPicker from './BlueprintPicker.jsx';
 import { initPdpAgent, initPdpAgentWithPdf, streamPdpAgent } from '../lib/pdpAgentApi.js';
 import { buildWebhookRequest, subscribeProgress } from '../lib/webhookBus.js';
+import { useNewThread, useThreadNav, useThreadResume } from '../lib/threadNav.jsx';
 import {
   IconArrowLeft,
   IconCompass,
@@ -754,7 +756,11 @@ export default function PdpAgentScreen({
   // This screen owns the PDP thread. One thread covers exactly ONE product and
   // init inputs are immutable, so it must never be the Foundation thread id —
   // that one is reused across the other agents and re-initializing is refused.
-  const productThreadId = useRef(newId('pdp')).current;
+  //
+  // STATE, not a ref, since reopening a past thread replaces it. It still starts as
+  // a fresh minted id, so a screen that is never asked to reopen behaves exactly as
+  // it did when this was `useRef(newId('pdp')).current`.
+  const [productThreadId, setProductThreadId] = useState(() => newId('pdp'));
 
   const [phase, setPhase] = useState('setup'); // 'setup' | 'ready'
   const [path, setPath] = useState('page_scrape'); // 'page_scrape' | 'raw_input'
@@ -773,6 +779,15 @@ export default function PdpAgentScreen({
   // prop together, then send `foundationId.trim()` in place of `foundationThreadId`.
   // const [foundationId, setFoundationId] = useState(foundationThreadId || '');
   const [pdfFile, setPdfFile] = useState(null);
+  // A Foundation thread the user PICKED as this audit's brand context, chosen from
+  // the Blueprints that already exist rather than uploaded as a PDF. This is what
+  // makes the standalone entry usable with a real Blueprint: before it, a founder
+  // with no project session behind the screen could only supply a PDF, even though
+  // the Blueprint they wanted was sitting on a Foundation thread already.
+  const [pickedBlueprintId, setPickedBlueprintId] = useState('');
+  // What init actually sends. A PICKED Blueprint wins over the session's own, because
+  // choosing one is a deliberate act and the session's arrives silently on a prop.
+  const effectiveFoundationId = pickedBlueprintId || foundationThreadId || '';
   const [initLoading, setInitLoading] = useState(false);
   const [initError, setInitError] = useState(null);
   // Map<stage, {message, failed}> from the intake webhooks, so a slow scrape shows
@@ -887,6 +902,115 @@ export default function PdpAgentScreen({
   const abortRef = useRef(null);
   const scrollRef = useRef(null);
 
+  // ---------------------------------------------------------------------------
+  // Reopening a past thread.
+  //
+  // Everything on this screen lives in React state, so a refresh used to lose the
+  // whole audit even though the backend still had it. `GET /threads/pdp/{id}` hands
+  // back the same keys the `done` frame carries, so the artifacts go through the
+  // SAME setters a finished turn uses — there is no second way to load a page here.
+  // ---------------------------------------------------------------------------
+  const { bumpThreads } = useThreadNav();
+
+  function applyThread(t) {
+    setProductThreadId(t.thread_id);
+    setPath(t.path || 'page_scrape');
+    setPlatform(t.platform || 'amazon');
+    setProductUrl(t.product_url || '');
+    // `capture` is what the header reads the product's name out of; init fills it
+    // from its own response, and this is the same few fields off the thread.
+    setCapture({
+      thread_id: t.thread_id,
+      path: t.path,
+      platform: t.platform,
+      product_title: t.product_title,
+    });
+    setIntakeTitle(null);
+    setIntake({});
+    // The webhook payload only ever arrives DURING init, so a reopened thread has
+    // none of it. Null rather than stale: the panel it feeds is about what this run
+    // read, and there was no run.
+    setScrape(null);
+    setMessages(
+      // `role` carries 'summary' through untouched — `ChatMessageItem` draws that
+      // one as a divider, because compaction's note is not something anybody said.
+      // No `time`: the thread stores what was said, not when, so a timestamp here
+      // would have to be invented.
+      (t.messages || []).map((m) => ({ role: m.role, content: m.content, time: null })),
+    );
+    // Split the way a live turn splits them: anything already answered belongs in
+    // the Product tab, and only genuinely unanswered questions put the card back up.
+    const questions = t.questions || [];
+    const answered = questions.filter((q) => (q.answers || []).length);
+    setGapAnswered(answered.map((q) => ({ ...q, answers: q.answers || null })));
+    setGapQuestions(answered.length ? [] : questions);
+    setAudit(t.audit || null);
+    setStrategy(t.strategy || null);
+    setScout(t.scout || null);
+    setContent(t.content || null);
+    // Replaced, never merged: on a reopen null means "this thread has none", where
+    // on a `done` frame it means "unchanged, keep what you have".
+    setImageSets(t.image_sets || null);
+    setTurnError(null);
+    setCanvasSel('auditor');
+    setPhase('ready');
+  }
+
+  const {
+    loading: resumeLoading,
+    error: resumeReadError,
+    notFound: resumeNotFound,
+    markLoaded,
+  } = useThreadResume('pdp', {
+    apply: applyThread,
+    // Only restore over the setup form. A screen already showing an audit must not
+    // have it replaced by whatever this browser happened to have open last.
+    shouldRecall: () => phase === 'setup',
+  });
+  // A thread that is GONE and a read that FAILED are both worth saying, and they say
+  // different things — one is final, the other is worth another go.
+  const resumeError =
+    resumeReadError ||
+    (resumeNotFound ? 'That audit is no longer available.' : null);
+
+  // + New on this agent's thread list: back to the setup form with a fresh id, so a
+  // second product can be audited without leaving the project. Nothing is sent to
+  // the backend — a PDP thread only exists once init has run — and the audit that
+  // was on screen is untouched on the server and still in the list.
+  useNewThread('pdp', () => {
+    abortRef.current?.abort();
+    setProductThreadId(newId('pdp'));
+    setPhase('setup');
+    setPath('page_scrape');
+    setPlatform('amazon');
+    setProductUrl('');
+    setProductText('');
+    setImageUrls(['']);
+    setPdfFile(null);
+    setPickedBlueprintId('');
+    setInitError(null);
+    setIntake({});
+    setIntakeTitle(null);
+    setCapture(null);
+    setScrape(null);
+    setMessages([]);
+    setGapQuestions([]);
+    setGapAnswered([]);
+    setStreamingText(null);
+    setTyping(false);
+    setTurnError(null);
+    setRunning({});
+    setActivity([]);
+    setAudit(null);
+    setAuditAreas(new Set());
+    setStrategy(null);
+    setScout(null);
+    setContent(null);
+    setImageSets(null);
+    setCanvasSel('auditor');
+    canvasTouchedRef.current = false;
+  });
+
   const busy = typing || streamingText !== null;
   // The arc's Auditor step ticks on the PAGE existing, not on an area having
   // announced itself: an area webhook can arrive from a pass whose render then
@@ -965,7 +1089,7 @@ export default function PdpAgentScreen({
     // needs a Foundation thread — it REQUIRES `foundation_thread_id`, exactly as the
     // Meta Ad init does — so the multipart entry serves both the founder who chose a
     // PDF and the standalone founder who has neither.
-    const useMultipart = Boolean(pdfFile) || !foundationThreadId;
+    const useMultipart = Boolean(pdfFile) || !effectiveFoundationId;
 
     // Open the subscription BEFORE init so no stage is missed — the scrape runs
     // inside the request and fires as it goes. The multipart entry carries no
@@ -1033,7 +1157,7 @@ export default function PdpAgentScreen({
       // and the audit judges the page on its own terms.
       const res = useMultipart
         ? await initPdpAgentWithPdf({ ...common, pdfFile })
-        : await initPdpAgent({ ...common, foundation_thread_id: foundationThreadId, webhook_request });
+        : await initPdpAgent({ ...common, foundation_thread_id: effectiveFoundationId, webhook_request });
       setCapture(res);
       setMessages(
         res.ai_message ? [{ role: 'assistant', content: res.ai_message, time: Date.now() }] : []
@@ -1043,6 +1167,11 @@ export default function PdpAgentScreen({
       setGapQuestions(res.questions || []);
       setCanvasSel('auditor');
       setPhase('ready');
+      // The thread exists from here on, so the sidebar can list it and a refresh
+      // can find it again. Recorded on SUCCESS only — a refused init leaves no
+      // thread behind, and remembering one would reopen nothing on the next load.
+      markLoaded(productThreadId);
+      bumpThreads();
     } catch (e) {
       setInitError(friendlyInitError(e?.message));
     } finally {
@@ -1262,6 +1391,10 @@ export default function PdpAgentScreen({
             setImageSets(ev.image_sets);
             if (!canvasTouchedRef.current) setCanvasSel('studio');
           }
+          // The turn is on the thread now, so the sidebar's list is a turn behind:
+          // this thread has moved to the top and may have gained a title it did not
+          // have when the list was last fetched.
+          bumpThreads();
         } else if (ev.type === 'error') {
           setTurnError(ev.message || 'Something went wrong and this reply did not finish.');
         }
@@ -1370,8 +1503,18 @@ export default function PdpAgentScreen({
           current={canvasSel}
         />
 
-        {phase === 'setup' ? (
+        {phase === 'setup' && resumeLoading ? (
+          // Reopening covers the setup form rather than sitting beside it: the form
+          // starts a NEW audit, and offering that while a past one is loading invites
+          // someone to start a second thread by accident.
+          <div className="flex flex-1 items-center justify-center">
+            <p className="text-[13px] text-ink-500 dark:text-slate-400">
+              Reopening your audit…
+            </p>
+          </div>
+        ) : phase === 'setup' ? (
           <SetupView
+            resumeError={resumeError}
             path={path}
             setPath={setPath}
             platform={platform}
@@ -1384,6 +1527,8 @@ export default function PdpAgentScreen({
             setImageUrls={setImageUrls}
             pdfFile={pdfFile}
             setPdfFile={setPdfFile}
+            pickedBlueprintId={pickedBlueprintId}
+            setPickedBlueprintId={setPickedBlueprintId}
             hasFoundation={!!foundationThreadId}
             initLoading={initLoading}
             initError={initError}
@@ -1637,7 +1782,12 @@ function SetupView({
   // `setFoundationId`, `hasProjectFoundation`. Restore them together with the
   // state and the `Field` below.
   pdfFile, setPdfFile, hasFoundation,
+  pickedBlueprintId, setPickedBlueprintId,
   initLoading, initError, intake, intakeTitle, onStart,
+  // Why reopening a past audit did not work. Shown above the form rather than
+  // instead of it: the form is still the way forward, and a failed reopen must not
+  // leave someone stuck on a dead end.
+  resumeError,
 }) {
   function updateImageAt(i, val) {
     setImageUrls((prev) => prev.map((v, idx) => (idx === i ? val : v)));
@@ -1649,6 +1799,11 @@ function SetupView({
   return (
     <div className="flex-1 overflow-y-auto thin-scroll bg-canvas dark:bg-slate-950">
       <div className="max-w-[760px] mx-auto px-6 py-10">
+        {resumeError && (
+          <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300">
+            {resumeError} You can start a new audit below.
+          </div>
+        )}
         <div className="font-display text-[27px] font-semibold text-navy-900 dark:text-slate-100">
           Let's look at your product page
         </div>
@@ -1818,12 +1973,60 @@ function SetupView({
         </div>
         */}
 
+        {/* THREE sources, not one. A PDF used to be the only thing offered here, so
+            a founder whose Blueprint already existed on a Foundation thread had to
+            re-export it to use it. The picker reads the real thing instead. All
+            three are optional — the audit runs with no brand context at all. */}
         <Card title="Brand blueprint (optional)">
+          {hasFoundation && !pickedBlueprintId && (
+            <div className="mb-3 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-[12px] text-brand-800 dark:border-brand-500/40 dark:bg-brand-500/10 dark:text-brand-300">
+              Using this project&apos;s Blueprint. Pick another below to override it.
+            </div>
+          )}
+
+          <Field label="Use a Foundation Blueprint">
+            <BlueprintPicker
+              selectedId={pickedBlueprintId}
+              onPick={(id) => {
+                // A plain set, never a toggle: this fires per keystroke from the
+                // free-text field as well as from the list, and a toggle would
+                // clear the box the moment someone retyped the same id.
+                setPickedBlueprintId(id);
+                // Choosing a Blueprint clears any PDF: the two are alternatives,
+                // and the backend takes the PDF over the thread, so leaving both
+                // set would silently ignore the choice just made.
+                if (id) setPdfFile(null);
+              }}
+            />
+            {pickedBlueprintId && (
+              <button
+                type="button"
+                onClick={() => setPickedBlueprintId('')}
+                className="mt-2 text-[11.5px] font-medium text-navy-500 underline hover:text-navy-700 dark:text-slate-400 dark:hover:text-slate-200"
+              >
+                Clear selection
+              </button>
+            )}
+          </Field>
+
+          <div className="my-3 flex items-center gap-3 text-[11px] uppercase tracking-wider text-navy-400 dark:text-slate-500">
+            <span className="h-px flex-1 bg-navy-100 dark:bg-slate-700" />
+            or
+            <span className="h-px flex-1 bg-navy-100 dark:bg-slate-700" />
+          </div>
+
           <Field label="Company Blueprint PDF">
             <input
               type="file"
               accept="application/pdf,.pdf"
-              onChange={(e) => setPdfFile(e.target.files?.[0] || null)}
+              onChange={(e) => {
+                const file = e.target.files?.[0] || null;
+                setPdfFile(file);
+                // Same rule the other way: a PDF wins on the backend, so choosing
+                // one must visibly drop the picked thread rather than leave a
+                // selection on screen that is not being used.
+                if (file) setPickedBlueprintId('');
+              }}
               className="w-full text-[12.5px] text-navy-700 dark:text-slate-200 file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-meta-600 file:text-white file:text-[12.5px] file:cursor-pointer hover:file:bg-meta-700"
             />
           </Field>

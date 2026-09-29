@@ -15,7 +15,48 @@ import {
   IconChart,
   IconBook,
 } from './icons.jsx';
+import ThreadHistory from './ThreadHistory.jsx';
 import { useTheme } from '../lib/theme.js';
+import { useThreadNav } from '../lib/threadNav.jsx';
+
+// The agent entries, in the order they appear. Data rather than five near-identical
+// JSX blocks, because every one of them now carries a sub-entry AND a thread list and
+// the repetition was already where they drifted apart.
+//
+// `historyAgent` is the slug `/api/v1/threads/{agent}` takes, and its ABSENCE is
+// meaningful: an entry without one shows no thread list. Execution is not an agent at
+// all, and the Forecast agent keeps its own thread store on a different wire, so
+// neither can be listed here.
+const AGENT_ITEMS = [
+  {
+    view: 'email_agent',
+    label: 'Email Agent',
+    sub: 'Campaign Builder',
+    icon: <IconMail />,
+    historyAgent: 'email',
+  },
+  {
+    view: 'meta_ad_agent',
+    label: 'Meta Ad Agent',
+    sub: 'Ad Workbench',
+    icon: <IconTarget />,
+    historyAgent: 'meta-ad',
+  },
+  {
+    view: 'pdp_agent',
+    label: 'PDP Agent',
+    sub: 'Product Audit',
+    icon: <IconCompass />,
+    historyAgent: 'pdp',
+  },
+  {
+    view: 'forecast_agent',
+    label: 'Forecast Agent',
+    sub: 'Forecast Workbench',
+    icon: <IconChart />,
+    historyAgent: null,
+  },
+];
 
 export default function Sidebar({
   projectName = 'Untitled project',
@@ -26,9 +67,41 @@ export default function Sidebar({
   // PDF flow: hide the Foundations tab since no foundation chat ran for
   // this thread. Execution + Email Agent stay accessible.
   hideFoundation = false,
+  // Hides every thread list, for the one caller that must not show them: the docs
+  // screen, whose sidebar is a mirror of the nav rather than a working one.
+  hideThreads = false,
 }) {
   const [theme, toggleTheme] = useTheme();
   const isDark = theme === 'dark';
+
+  // Straight from context rather than through props: seven components render this
+  // sidebar, and drilling these through all of them is the thing the context exists
+  // to avoid. Outside a provider the hook answers inert, so nothing has to guard.
+  const { openThreadIds, openThread, refreshKey, startNewThread } = useThreadNav();
+  const showThreads = !hideThreads;
+
+  // Ask the screen to reopen the thread, then switch to that agent's view. The
+  // navigation happens HERE rather than inside the provider, because this is where
+  // both halves are already in hand: the thread nav and the app's own `onSelectView`.
+  function reopen(historyAgent, view, threadId) {
+    openThread(historyAgent, threadId);
+    if (activeView !== view) onSelectView?.(view);
+  }
+
+  // One agent's thread list, shown only under the entry the user is actually in.
+  // Rendering all four at once would fetch four rosters on every sidebar mount.
+  function historyFor(item) {
+    if (!item.historyAgent || activeView !== item.view || !showThreads) return null;
+    return (
+      <ThreadHistory
+        agent={item.historyAgent}
+        activeThreadId={openThreadIds[item.historyAgent]}
+        onOpenThread={(threadId) => reopen(item.historyAgent, item.view, threadId)}
+        onNewThread={() => startNewThread(item.historyAgent)}
+        refreshKey={refreshKey}
+      />
+    );
+  }
 
   return (
     <aside className="w-[220px] shrink-0 bg-white dark:bg-slate-900 border-r border-ink-200 dark:border-slate-800 flex flex-col">
@@ -55,84 +128,66 @@ export default function Sidebar({
         </button>
       </div>
 
-      <nav className="px-2 mt-2 flex flex-col gap-0.5">
+      {/* The nav scrolls: a thread list under the open agent can be longer than the
+          space left below it, and without this the theme toggle and Documentation at
+          the foot get pushed off the screen. */}
+      <nav className="px-2 mt-2 flex flex-col gap-0.5 flex-1 overflow-y-auto min-h-0">
         {!hideFoundation && (
-          <NavItem
-            icon={<IconSettings />}
-            label="Foundations"
-            right={`${foundationPercent}%`}
-            active={activeView === 'foundations'}
-            onClick={() => onSelectView?.('foundations')}
-          />
+          <>
+            <NavItem
+              icon={<IconSettings />}
+              label="Foundations"
+              right={`${foundationPercent}%`}
+              active={activeView === 'foundations'}
+              onClick={() => onSelectView?.('foundations')}
+            />
+            {/* The Foundation agent's own threads. It is listed like any other agent
+                because it IS one — it produces the Blueprint the other four consume,
+                rather than being a step inside the email flow. */}
+            {activeView === 'foundations' && showThreads && (
+              <ThreadHistory
+                agent="foundation"
+                activeThreadId={openThreadIds.foundation}
+                onOpenThread={(threadId) =>
+                  reopen('foundation', 'foundations', threadId)
+                }
+                // A new FOUNDATION thread is a new project: this agent's thread is
+                // what a project IS, and building one starts at the company URL
+                // rather than at a setup form inside an existing session. So this
+                // one alone routes to the app's new-project flow.
+                onNewThread={onNewProject}
+                refreshKey={refreshKey}
+              />
+            )}
+            <NavItem
+              icon={<IconZap />}
+              label="Execution"
+              active={activeView === 'execution'}
+              onClick={() => onSelectView?.('execution')}
+            />
+          </>
         )}
-        {!hideFoundation && (
-          <NavItem
-            icon={<IconZap />}
-            label="Execution"
-            active={activeView === 'execution'}
-            onClick={() => onSelectView?.('execution')}
-          />
-        )}
-        <NavItem
-          icon={<IconMail />}
-          label="Email Agent"
-          active={activeView === 'email_agent'}
-          onClick={() => onSelectView?.('email_agent')}
-        />
-        {activeView === 'email_agent' && (
-          <button
-            type="button"
-            onClick={() => onSelectView?.('email_agent')}
-            className="ml-7 mt-0.5 flex items-center gap-2 px-3 py-1.5 rounded-md text-[12.5px] font-medium bg-brand-50 dark:bg-brand-500/10 text-brand-700 dark:text-brand-500 border-l-2 border-brand-500"
-          >
-            Campaign Builder
-          </button>
-        )}
-        <NavItem
-          icon={<IconTarget />}
-          label="Meta Ad Agent"
-          active={activeView === 'meta_ad_agent'}
-          onClick={() => onSelectView?.('meta_ad_agent')}
-        />
-        {activeView === 'meta_ad_agent' && (
-          <button
-            type="button"
-            onClick={() => onSelectView?.('meta_ad_agent')}
-            className="ml-7 mt-0.5 flex items-center gap-2 px-3 py-1.5 rounded-md text-[12.5px] font-medium bg-brand-50 dark:bg-brand-500/10 text-brand-700 dark:text-brand-500 border-l-2 border-brand-500"
-          >
-            Ad Workbench
-          </button>
-        )}
-        <NavItem
-          icon={<IconCompass />}
-          label="PDP Agent"
-          active={activeView === 'pdp_agent'}
-          onClick={() => onSelectView?.('pdp_agent')}
-        />
-        {activeView === 'pdp_agent' && (
-          <button
-            type="button"
-            onClick={() => onSelectView?.('pdp_agent')}
-            className="ml-7 mt-0.5 flex items-center gap-2 px-3 py-1.5 rounded-md text-[12.5px] font-medium bg-brand-50 dark:bg-brand-500/10 text-brand-700 dark:text-brand-500 border-l-2 border-brand-500"
-          >
-            Product Audit
-          </button>
-        )}
-        <NavItem
-          icon={<IconChart />}
-          label="Forecast Agent"
-          active={activeView === 'forecast_agent'}
-          onClick={() => onSelectView?.('forecast_agent')}
-        />
-        {activeView === 'forecast_agent' && (
-          <button
-            type="button"
-            onClick={() => onSelectView?.('forecast_agent')}
-            className="ml-7 mt-0.5 flex items-center gap-2 px-3 py-1.5 rounded-md text-[12.5px] font-medium bg-brand-50 dark:bg-brand-500/10 text-brand-700 dark:text-brand-500 border-l-2 border-brand-500"
-          >
-            Forecast Workbench
-          </button>
-        )}
+
+        {AGENT_ITEMS.map((item) => (
+          <React.Fragment key={item.view}>
+            <NavItem
+              icon={item.icon}
+              label={item.label}
+              active={activeView === item.view}
+              onClick={() => onSelectView?.(item.view)}
+            />
+            {activeView === item.view && (
+              <button
+                type="button"
+                onClick={() => onSelectView?.(item.view)}
+                className="ml-7 mt-0.5 flex items-center gap-2 px-3 py-1.5 rounded-md text-[12.5px] font-medium bg-brand-50 dark:bg-brand-500/10 text-brand-700 dark:text-brand-500 border-l-2 border-brand-500"
+              >
+                {item.sub}
+              </button>
+            )}
+            {historyFor(item)}
+          </React.Fragment>
+        ))}
       </nav>
 
       <div className="mt-auto px-2 pb-3 flex flex-col gap-0.5">

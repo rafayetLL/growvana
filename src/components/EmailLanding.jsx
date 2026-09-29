@@ -1,12 +1,20 @@
 import React, { useRef, useState } from 'react';
 import Logo from './Logo.jsx';
+import BlueprintPicker from './BlueprintPicker.jsx';
 import { IconAttach, IconZap, IconBook } from './icons.jsx';
 
-// Landing page — two large cards. PDF upload bypasses Foundation entirely
-// by POSTing to /email-agent/init_with_pdf; the second card hands off to
-// the existing Onboarding (company URL + reference docs) flow.
+// Landing page — how this campaign gets its brand context. Two cards:
+//   1. upload a Blueprint PDF (POSTs to /email-agent/init_with_pdf);
+//   2. point at a Foundation thread that already holds one.
+//
+// **BUILDING a Blueprint is no longer offered here.** It was, as "Generate Blueprint
+// in Foundation", and that put the step every agent depends on behind the one that
+// needs it least — someone who wanted a Blueprint for the ad agent had to start an
+// email campaign to reach it. Foundation is its own entry on the chooser now, and
+// `onBuildBlueprint` sends them there rather than nesting the flow again.
 export default function EmailLanding({
-  onSelectFoundation,
+  onPickBlueprint,
+  onBuildBlueprint,
   onUploadPdf,
   onBack,
   onOpenDocs,
@@ -99,28 +107,24 @@ export default function EmailLanding({
               />
             </button>
 
-            <button
-              type="button"
-              onClick={onSelectFoundation}
-              disabled={uploading}
-              className="text-left bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-800 rounded-2xl p-6 hover:border-brand-400 dark:hover:border-brand-500/60 hover:shadow-md transition disabled:opacity-60"
-            >
+            {/* Not a button: the whole point is choosing WHICH Blueprint, so the
+                choice lives inside the card rather than behind it. */}
+            <div className="text-left bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-800 rounded-2xl p-6">
               <div className="h-11 w-11 rounded-xl bg-brand-50 dark:bg-brand-500/15 text-brand-700 dark:text-brand-400 grid place-items-center">
                 <IconZap width={20} height={20} />
               </div>
               <h2 className="mt-4 text-[18px] font-semibold text-ink-900 dark:text-slate-100">
-                Generate Blueprint in Foundation
+                Use a Foundation Blueprint
               </h2>
               <p className="mt-1.5 text-[13px] text-ink-500 dark:text-slate-400 leading-relaxed">
-                Don&apos;t have a blueprint yet? Drop a company URL and any reference docs and the AI will build the brand bible and buyer personas with you, then hand off to the email agent.
+                Pick a Foundation thread you&apos;ve already built. The email agent reads its brand bible and buyer personas — no re-uploading, and the campaign stays tied to that brand.
               </p>
-              <p className="mt-3 text-[11.5px] text-ink-400 dark:text-slate-500">
-                Takes a few minutes. Ideal when you&apos;re starting from scratch.
-              </p>
-              <div className="mt-5 inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-brand-500 text-white text-[13px] font-medium hover:bg-brand-600 transition">
-                Start Foundation →
-              </div>
-            </button>
+              <BlueprintPicker
+                className="mt-4"
+                onPick={(threadId, title) => onPickBlueprint?.(threadId, title)}
+                onBuildNew={onBuildBlueprint}
+              />
+            </div>
           </div>
 
           {error && (

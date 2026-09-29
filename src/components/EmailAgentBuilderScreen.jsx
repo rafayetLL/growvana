@@ -6,7 +6,13 @@ import Composer from './Composer.jsx';
 import GapQuestions from './GapQuestions.jsx';
 import ThreadOverridePanel from './ThreadOverridePanel.jsx';
 import { ChatMessageItem } from './MessageRenderers.jsx';
-import { initEmailAgent, streamEmailAgent } from '../lib/emailAgentApi.js';
+import {
+  initEmailAgent,
+  initEmailAgentWithPdf,
+  streamEmailAgent,
+} from '../lib/emailAgentApi.js';
+import BlueprintPicker from './BlueprintPicker.jsx';
+import { useNewThread, useThreadNav, useThreadResume } from '../lib/threadNav.jsx';
 import { buildWebhookRequest, subscribeProgress } from '../lib/webhookBus.js';
 import {
   IconArrowLeft,
@@ -92,9 +98,27 @@ export default function EmailAgentBuilderScreen({
   // lookup would 400 for this thread).
   preInitedResult = null,
   hideFoundation = false,
+  // The Foundation thread this campaign reads brand context from. Defaults to
+  // `threadId`, which is what a project session has always used — one id, two
+  // checkpoint prefixes. It is passed SEPARATELY only when the user picked an
+  // existing Blueprint instead of building one in this session.
+  foundationThreadId,
+  // This thread ALREADY EXISTS — the app restored it after a reload rather than
+  // creating it. Init must not run: the thread has been opened once already, and
+  // opening it again would either be refused or add a second opening message. The
+  // conversation is read back instead.
+  existingThread = false,
 }) {
   const taskIdRef = useRef(newTaskId());
   const taskId = taskIdRef.current;
+
+  // 'ready' by default, NOT 'setup': entering this screen inside a project has
+  // always opened the campaign straight away against that project's Foundation, and
+  // that stays true. The setup step exists for + New, where there is a real choice
+  // to make about where brand context comes from.
+  const [phase, setPhase] = useState('ready'); // 'setup' | 'ready'
+  const [pickedBlueprintId, setPickedBlueprintId] = useState('');
+  const [pdfFile, setPdfFile] = useState(null);
 
   const [initLoading, setInitLoading] = useState(false);
   const [initError, setInitError] = useState(null);
@@ -145,6 +169,133 @@ export default function EmailAgentBuilderScreen({
   // fires twice on mount.
   const initedThreadRef = useRef(null);
 
+  // ---------------------------------------------------------------------------
+  // Reopening a past campaign.
+  //
+  // `GET /threads/email/{id}` hands back the same keys the `done` frame carries, so
+  // the plan, the copy and the markup go through the SAME setters a finished turn
+  // uses. The one difference is what null means: on `done` it is "that node did not
+  // run this turn, keep what you have", and here it is "this thread has none".
+  // ---------------------------------------------------------------------------
+  const { bumpThreads } = useThreadNav();
+  // Which thread is actually on screen. It starts as the one the app handed us and
+  // changes when a past campaign is reopened, so every turn below sends the right id.
+  const [openThreadId, setOpenThreadId] = useState(threadId);
+  useEffect(() => setOpenThreadId(threadId), [threadId]);
+
+  function applyThread(t) {
+    setOpenThreadId(t.thread_id);
+    // Stops the init effect from firing for this thread — it has already been
+    // inited, and calling /init again on a live thread is not what reopening means.
+    initedThreadRef.current = t.thread_id;
+    setMessages(
+      (t.messages || []).map((m) => ({ role: m.role, content: m.content, time: null })),
+    );
+    // Only questions still unanswered put the card back up; answering is what
+    // clears it, and it is never asked twice.
+    setGapQuestions((t.questions || []).filter((q) => !(q.answers || []).length));
+    setLatestPlan(t.email_plan || null);
+    setLatestContent(t.content || null);
+    setLatestHtml(t.html || null);
+    setEmailAssets(t.assets || []);
+    setInitError(null);
+    setBlueprintMissing(false);
+    setTurnError(null);
+    // Open on the furthest thing this campaign actually got to, so reopening lands
+    // on the work rather than on an empty first tab.
+    setActiveTab(t.html ? 'design' : t.content ? 'content' : 'strategy');
+  }
+
+  const {
+    loading: resumeLoading,
+    error: resumeError,
+    notFound: resumeNotFound,
+    markLoaded,
+  } = useThreadResume('email', {
+    apply: applyThread,
+    // THIS thread, not whichever one the browser last had: the app hands this screen
+    // its project thread and every turn streams to it. Only while the user is
+    // actually in this view, because the init effect below has the same guard and
+    // the two must not disagree about which thread is being opened.
+    boundThreadId: isActive ? threadId : undefined,
+    // Only restore into an empty screen. This component stays MOUNTED behind the
+    // other agents' views, so a restore firing over a campaign in progress would
+    // replace work the user can still see. A fresh `/init` also fills `messages`,
+    // which is what stops this replacing an opening message that just arrived.
+    shouldRecall: () => messages.length === 0,
+  });
+
+  // + New on this agent's thread list: a second campaign for the SAME brand. Unlike
+  // PDP and Meta Ad there is no setup form to go back to, so this mints a new email
+  // thread id and lets the init effect open it — against the same Foundation, which
+  // is the point: a new campaign, not a new project.
+  useNewThread('email', () => {
+    abortRef.current?.abort();
+    const fresh = newTaskId();
+    // Claimed so the init effect leaves this thread alone: a new campaign is opened
+    // by the setup step below, once the user has said where its brand context comes
+    // from, rather than silently against this project's Foundation.
+    initedThreadRef.current = fresh;
+    setOpenThreadId(fresh);
+    setPhase('setup');
+    setPickedBlueprintId('');
+    setPdfFile(null);
+    setMessages([]);
+    setGapQuestions([]);
+    setLatestPlan(null);
+    setLatestContent(null);
+    setLatestHtml(null);
+    setEmailAssets([]);
+    setStreamingText(null);
+    setTyping(false);
+    setTurnError(null);
+    setDraftingAgent(null);
+    setInitError(null);
+    setBlueprintMissing(false);
+    setActiveTab('strategy');
+  });
+
+  // Open the new campaign the setup step just described. TWO ways in, and they are
+  // different endpoints: a PDF carries its own brand context and skips phase-1
+  // entirely, while a Foundation thread is read for the Blueprint already on it.
+  async function startNewCampaign() {
+    const target = openThreadId;
+    if (!target) return;
+    const foundationId = pickedBlueprintId || foundationThreadId || threadId;
+    if (!pdfFile && !foundationId) {
+      setInitError(
+        'Pick a Foundation Blueprint or upload a Blueprint PDF so the campaign has brand context.',
+      );
+      return;
+    }
+    setInitLoading(true);
+    setInitError(null);
+    setBlueprintMissing(false);
+    try {
+      const res = pdfFile
+        ? await initEmailAgentWithPdf({ thread_id: target, pdfFile })
+        : await initEmailAgent({
+            thread_id: target,
+            foundation_thread_id: foundationId,
+          });
+      const intro = res?.ai_message || '';
+      setMessages(intro ? [{ role: 'assistant', content: intro, time: Date.now() }] : []);
+      setGapQuestions(res?.questions || []);
+      setPhase('ready');
+      markLoaded(target);
+      bumpThreads();
+    } catch (e) {
+      const msg = e?.message || 'Failed to start the campaign';
+      setInitError(msg);
+      if (msg.toLowerCase().includes('blueprint')) setBlueprintMissing(true);
+      // The thread was never opened, so let the user correct and try again rather
+      // than leaving the claimed ref blocking every retry.
+      initedThreadRef.current = null;
+    } finally {
+      setInitLoading(false);
+    }
+  }
+
   // Init when the user actually enters this view (isActive=true).
   // We can't init on mount: this screen is rendered (hidden) the moment
   // the chat stage starts, BEFORE phase-1 has drafted brand_bible /
@@ -159,9 +310,26 @@ export default function EmailAgentBuilderScreen({
   // ChatScreen uses.
   useEffect(() => {
     if (!isActive) return;
-    if (!threadId) return;
-    if (initedThreadRef.current === threadId) return;
-    initedThreadRef.current = threadId;
+    // THE THREAD ON SCREEN, not the prop. They are the same until either the sidebar
+    // reopens a past campaign or + New mints a fresh one, and both of those have to
+    // init (or deliberately not init) the thread the user is actually looking at.
+    // Keying this on the prop meant a new thread could never be opened: the prop had
+    // not changed, so nothing fired.
+    const target = openThreadId;
+    if (!target) return;
+    // Already handled — either inited here, or filled in by a reopen, which claims
+    // this ref precisely so that init does not then run over it.
+    if (initedThreadRef.current === target) return;
+    // The app restored this session after a reload, so the read is the source of
+    // truth about whether THAT thread exists. Wait for it, and init only if it comes
+    // back a 404 — someone can be restored into the Foundations view having never
+    // opened the email agent, and that thread genuinely does need creating. Initing
+    // without waiting would add a second opening message to a thread that has one.
+    //
+    // It applies only to the restored thread itself: a freshly minted id is not the
+    // thread the app restored, so it must not sit behind this wait forever.
+    if (existingThread && target === threadId && !resumeNotFound) return;
+    initedThreadRef.current = target;
 
     // PDF flow: /email-agent/init_with_pdf has already run upstream and
     // its response is handed to us via `preInitedResult`. Skip the
@@ -183,7 +351,10 @@ export default function EmailAgentBuilderScreen({
     setBlueprintMissing(false);
     initEmailAgent({
       thread_id: thisThread,
-      foundation_thread_id: thisThread,
+      // Defaults to the same id, which is what a project session has always done —
+      // the email thread and the Foundation thread share one id under two prefixes.
+      // It differs only when a Blueprint was PICKED rather than built in session.
+      foundation_thread_id: foundationThreadId || thisThread,
     })
       .then((res) => {
         if (!stillCurrent()) return;
@@ -192,6 +363,10 @@ export default function EmailAgentBuilderScreen({
           setMessages([{ role: 'assistant', content: intro, time: Date.now() }]);
         }
         setGapQuestions(res?.questions || []);
+        // The thread is live from here, so the sidebar can list it and a refresh
+        // can find it again.
+        markLoaded(thisThread);
+        bumpThreads();
       })
       .catch((e) => {
         if (!stillCurrent()) return;
@@ -203,7 +378,10 @@ export default function EmailAgentBuilderScreen({
         if (!stillCurrent()) return;
         setInitLoading(false);
       });
-  }, [threadId, isActive, preInitedResult]);
+    // `resumeNotFound` is a dependency because it is what RELEASES the wait above:
+    // the effect runs once and returns while the read is in flight, then runs again
+    // when that read says there is no thread here, and only then inits.
+  }, [threadId, isActive, preInitedResult, existingThread, resumeNotFound, openThreadId]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -229,7 +407,7 @@ export default function EmailAgentBuilderScreen({
     const webhook_request = buildWebhookRequest({
       task_id: taskId,
       event_type: 'workflow.email_agent',
-      data: { thread_id: threadId },
+      data: { thread_id: openThreadId },
     });
 
     // Subscribe to webhook events for live incremental updates (plan
@@ -350,7 +528,8 @@ export default function EmailAgentBuilderScreen({
     const priorPlanKey = latestPlan ? JSON.stringify(latestPlan) : null;
     try {
       for await (const evt of streamEmailAgent({
-        thread_id: threadId,
+        // The thread ACTUALLY on screen, which is the reopened one after a reopen.
+        thread_id: openThreadId,
         user_message,
         gap_answers,
         attachment_urls,
@@ -395,6 +574,9 @@ export default function EmailAgentBuilderScreen({
           } else if (firedPlan) {
             setActiveTab('strategy');
           }
+          // This thread has moved to the top of the list and may have gained a
+          // title it did not have when the sidebar last fetched.
+          bumpThreads();
         } else if (evt.type === 'error') {
           const m = evt.message || 'Error';
           setTurnError(m);
@@ -456,6 +638,23 @@ export default function EmailAgentBuilderScreen({
           hasHtml={hasAnyHtml(latestHtml?.kind, latestHtml?.single, latestHtml?.sequence)}
         />
 
+        {phase === 'setup' ? (
+          // A NEW campaign has to be told where its brand context comes from, and
+          // there are exactly two answers: a Blueprint that already exists on a
+          // Foundation thread, or an uploaded PDF. The builder had no setup step at
+          // all before — it inited silently against the project's own Foundation —
+          // so a second campaign could never be pointed anywhere else.
+          <NewCampaignSetup
+            pickedBlueprintId={pickedBlueprintId}
+            setPickedBlueprintId={setPickedBlueprintId}
+            pdfFile={pdfFile}
+            setPdfFile={setPdfFile}
+            projectFoundationId={foundationThreadId || threadId}
+            loading={initLoading}
+            error={initError}
+            onStart={startNewCampaign}
+          />
+        ) : (
         <div className="flex-1 flex min-h-0">
           <div
             className="flex flex-col bg-white dark:bg-slate-900 min-w-0"
@@ -467,8 +666,14 @@ export default function EmailAgentBuilderScreen({
               className="flex-1 overflow-y-auto thin-scroll px-5 py-5"
             >
               <div className="flex flex-col gap-4">
-                {initLoading && (
+                {(initLoading || resumeLoading) && (
                   <InitSkeleton />
+                )}
+
+                {resumeError && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-[12.5px] text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300">
+                    {resumeError}
+                  </div>
                 )}
 
                 {initError && (
@@ -580,6 +785,7 @@ export default function EmailAgentBuilderScreen({
             )}
           </div>
         </div>
+        )}
       </div>
 
       {webhookToasts.length > 0 && (
@@ -713,6 +919,109 @@ function DraftingPill({ name }) {
           aria-label="Loading"
         />
         {label}…
+      </div>
+    </div>
+  );
+}
+
+// Where a NEW campaign gets its brand context. Two ways in, shown side by side
+// rather than one behind the other, because they are alternatives and neither is the
+// fallback: a Blueprint that already exists on a Foundation thread (picked from the
+// list, or any thread id typed in), or an uploaded Blueprint PDF.
+function NewCampaignSetup({
+  pickedBlueprintId,
+  setPickedBlueprintId,
+  pdfFile,
+  setPdfFile,
+  projectFoundationId,
+  loading,
+  error,
+  onStart,
+}) {
+  // What this campaign will actually run on, said plainly — with nothing picked it
+  // falls back to the project's own Foundation, and a user should not have to infer
+  // that from an empty form.
+  const usingProjectDefault = !pdfFile && !pickedBlueprintId && projectFoundationId;
+
+  return (
+    <div className="flex-1 overflow-y-auto thin-scroll bg-cream-100 dark:bg-slate-950">
+      <div className="mx-auto max-w-[680px] px-6 py-10">
+        <h2 className="text-[24px] font-semibold text-ink-900 dark:text-slate-100">
+          Start a new campaign
+        </h2>
+        <p className="mt-2 text-[13.5px] leading-relaxed text-ink-500 dark:text-slate-400">
+          Tell the agent which brand this campaign is for. It reads the brand bible
+          and buyer personas from whichever you choose.
+        </p>
+
+        <div className="mt-6 rounded-xl border border-ink-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+          <h3 className="text-[14px] font-semibold text-ink-900 dark:text-slate-100">
+            Use a Foundation Blueprint
+          </h3>
+          <BlueprintPicker
+            className="mt-3"
+            selectedId={pickedBlueprintId}
+            onPick={(id) => {
+              setPickedBlueprintId(id);
+              if (id) setPdfFile(null);
+            }}
+          />
+        </div>
+
+        <div className="my-4 flex items-center gap-3 text-[11px] uppercase tracking-wider text-ink-400 dark:text-slate-500">
+          <span className="h-px flex-1 bg-ink-200 dark:bg-slate-700" />
+          or
+          <span className="h-px flex-1 bg-ink-200 dark:bg-slate-700" />
+        </div>
+
+        <div className="rounded-xl border border-ink-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+          <h3 className="text-[14px] font-semibold text-ink-900 dark:text-slate-100">
+            Upload a Blueprint PDF
+          </h3>
+          <p className="mt-1 text-[12px] text-ink-500 dark:text-slate-400">
+            Must contain the headings <span className="font-mono">Brand Bible</span>{' '}
+            and <span className="font-mono">Buyer Personas</span>.
+          </p>
+          <input
+            type="file"
+            accept="application/pdf,.pdf"
+            onChange={(e) => {
+              const file = e.target.files?.[0] || null;
+              setPdfFile(file);
+              if (file) setPickedBlueprintId('');
+            }}
+            className="mt-3 w-full text-[12.5px] text-ink-700 file:mr-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-moss-600 file:px-3 file:py-1.5 file:text-[12.5px] file:text-white hover:file:bg-moss-700 dark:text-slate-200"
+          />
+          {pdfFile && (
+            <p className="mt-2 truncate text-[11.5px] text-ink-500 dark:text-slate-400">
+              {pdfFile.name}
+            </p>
+          )}
+        </div>
+
+        {usingProjectDefault && (
+          <p className="mt-4 text-[12px] text-ink-500 dark:text-slate-400">
+            Nothing picked — this campaign will use the current project&apos;s
+            Blueprint.
+          </p>
+        )}
+
+        {error && (
+          <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-[12.5px] text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
+            {error}
+          </div>
+        )}
+
+        <div className="mt-6 flex justify-end">
+          <button
+            type="button"
+            onClick={onStart}
+            disabled={loading}
+            className="rounded-lg bg-brand-500 px-4 py-2.5 text-[13px] font-medium text-white transition hover:bg-brand-600 disabled:cursor-wait disabled:opacity-60"
+          >
+            {loading ? 'Starting…' : 'Start campaign →'}
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import CampaignChooser from './components/CampaignChooser.jsx';
 import EmailLanding from './components/EmailLanding.jsx';
 import Onboarding from './components/Onboarding.jsx';
@@ -13,6 +13,8 @@ import Sidebar from './components/Sidebar.jsx';
 import { initChat } from './lib/api.js';
 import { initEmailAgentWithPdf } from './lib/emailAgentApi.js';
 import { subscribeProgress, buildWebhookRequest } from './lib/webhookBus.js';
+import { ThreadNavProvider } from './lib/threadNav.jsx';
+import { recallSession, rememberSession } from './lib/threadHistoryApi.js';
 
 // PDF flow has no website to scrape and no foundation step to derive a
 // brand name from — keep the project label static and uniform.
@@ -41,28 +43,84 @@ function sidebarFromView(view) {
   return 'execution';
 }
 
+// The App does NOT map thread-history slugs to views: the sidebar owns that, because
+// it is where a thread is clicked and it already holds `onSelectView`. See
+// `AGENT_ITEMS` in Sidebar.jsx, which pairs each history slug with its view.
+
 function newThreadId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
   return 'thread-' + Math.random().toString(36).slice(2, 10);
 }
 
+// The provider wraps the whole app rather than sitting inside it, because every
+// screen renders its own sidebar and each one needs the same thread state. It holds
+// only agent→thread-id; a thread's contents are always re-read from the backend.
 export default function App() {
-  const [stage, setStage] = useState('landing'); // 'landing' | 'onboarding' | 'chat' | 'meta_ad' | 'pdp' | 'forecast'
+  return (
+    <ThreadNavProvider>
+      <AppInner />
+    </ThreadNavProvider>
+  );
+}
+
+// Everything the app needs to put someone back where they were after a reload. It is
+// read ONCE, synchronously, before the first render — restoring in an effect would
+// flash the agent chooser first, and that flash reads as "my work is gone", which is
+// the exact thing this exists to fix.
+//
+// Only a flow that actually has a thread behind it is restored. `onboarding` is
+// deliberately not: nothing has been created at that point, so reopening it would
+// re-show a half-filled form with no thread under it.
+const RESTORABLE_STAGES = new Set(['chat', 'meta_ad', 'pdp', 'forecast']);
+
+function restoredSession() {
+  const saved = recallSession();
+  if (!saved || !RESTORABLE_STAGES.has(saved.stage)) return null;
+  // The project flow is the one that needs a thread id to rebuild anything; the
+  // standalone flows mint or reopen their own inside the screen.
+  if (saved.stage === 'chat' && !saved.threadId) return null;
+  return saved;
+}
+
+function AppInner() {
+  const restored = useRef(restoredSession()).current;
+
+  const [stage, setStage] = useState(
+    // 'landing' | 'onboarding' | 'chat' | 'meta_ad' | 'pdp' | 'forecast'
+    () => restored?.stage || 'landing',
+  );
   // Which campaign type the user picked on the first screen.
   //   null       → show the CampaignChooser
   //   'email'    → the Email Campaign landing/flow
   //   'meta_ad'  → the standalone Meta Ad Agent (stage becomes 'meta_ad')
   //   'pdp'      → the standalone PDP Agent (stage becomes 'pdp')
   //   'forecast' → the standalone Forecast Agent (stage becomes 'forecast')
-  const [campaign, setCampaign] = useState(null);
+  const [campaign, setCampaign] = useState(() => restored?.campaign ?? null);
   // Thread id for the standalone Meta Ad flow (no email/foundation session
   // backs it — the Meta Ad agent self-inits from ad-account creds / PDF).
-  const [metaThreadId, setMetaThreadId] = useState('');
+  const [metaThreadId, setMetaThreadId] = useState(() =>
+    restored?.stage === 'meta_ad' ? newThreadId() : '',
+  );
   // Session marker for the standalone Forecast flow: the forecast wire REQUIRES
   // a foundation_thread_id (stored, never read in v1) and no foundation session
   // backs a standalone forecast, so a fresh id is minted to fill the slot.
-  const [forecastFoundationId, setForecastFoundationId] = useState('');
-  const [initResult, setInitResult] = useState(null);
+  const [forecastFoundationId, setForecastFoundationId] = useState(() =>
+    restored?.stage === 'forecast' ? newThreadId() : '',
+  );
+  // On a restore this is a STUB, not the init response: the thread already exists,
+  // so there is no opening message or question list to replay — the screens read
+  // those back from the thread itself. It carries the two things the shell needs
+  // before any of that lands: which thread this project is, and what to call it.
+  const [initResult, setInitResult] = useState(() =>
+    restored?.stage === 'chat'
+      ? {
+          thread_id: restored.threadId,
+          company_name: restored.projectName || 'Untitled project',
+          ai_message: '',
+          questions: [],
+        }
+      : null,
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   // Map<stage, { at, message }> populated from relay SSE events while init runs.
@@ -80,7 +138,7 @@ export default function App() {
   //   'foundations' — Phase-1 chat (ChatScreen)
   //   'agents'      — agent grid (AgentsScreen)
   //   'email_agent' — Email Marketing Agent detail (EmailAgentScreen)
-  const [view, setView] = useState('foundations');
+  const [view, setView] = useState(() => restored?.view || 'foundations');
 
   // Optional thread-id override, lifted here so it persists across tab
   // switches AND is shared between Foundations and Execution. When
@@ -94,8 +152,33 @@ export default function App() {
   // Every screen's sidebar routes the 'documentation' slug here.
   const [showDocs, setShowDocs] = useState(false);
 
+  // Where the user is, written down so a reload can put them back. Only the flow —
+  // no work, no messages, no artifacts, all of which come from the backend.
+  //
+  // The PDF flow is deliberately NOT restorable: its brand context arrived as an
+  // uploaded file this browser no longer holds, and `preInitedEmail` cannot be
+  // rebuilt from an id. Restoring the shell without it would re-fire
+  // `/email-agent/init` on a thread that has no Foundation behind it, which 400s.
+  useEffect(() => {
+    if (!RESTORABLE_STAGES.has(stage) || pdfFlow) {
+      rememberSession(null);
+      return;
+    }
+    rememberSession({
+      stage,
+      campaign,
+      view,
+      threadId: initResult?.thread_id || '',
+      projectName: initResult?.company_name || '',
+    });
+  }, [stage, campaign, view, initResult, pdfFlow]);
+
   // Reset everything back to the landing page ("New project" button in Sidebar).
   function handleNewProject() {
+    // Forget where they were FIRST: "New project" is the one action that says the
+    // old session is finished, and leaving it written down would reopen it on the
+    // next reload over the new project they are about to start.
+    rememberSession(null);
     setStage('landing');
     setCampaign(null);
     setMetaThreadId('');
@@ -123,6 +206,15 @@ export default function App() {
 
   // CampaignChooser → route into the chosen flow.
   function handlePickCampaign(type) {
+    if (type === 'foundation') {
+      // The Foundation agent's own entry. It goes straight to Onboarding (company
+      // URL + reference docs) and lands on the Foundations view — which is where
+      // `start()` already ends up, because `view` defaults there. What changed is
+      // that reaching it no longer means starting an email campaign first.
+      setCampaign('foundation');
+      setStage('onboarding');
+      return;
+    }
     if (type === 'meta_ad') {
       setMetaThreadId(newThreadId());
       setCampaign('meta_ad');
@@ -147,6 +239,29 @@ export default function App() {
       return;
     }
     setCampaign('email'); // stays on the 'landing' stage → EmailLanding
+  }
+
+  // Open the email agent against a Foundation thread that already holds a Blueprint.
+  // No phase-1 run happens here — that Blueprint exists, which is the whole point of
+  // picking one — so this skips Onboarding and goes straight to the chat stage.
+  //
+  // The email thread REUSES the Foundation thread's id, which is what the
+  // build-it-now path has always done: `/email-agent/init` reads brand context from
+  // `phase_1::<foundation_thread_id>`, and the two live under different prefixes, so
+  // one id names both without collision. It also means the Foundations tab beside it
+  // opens the real Foundation conversation rather than an empty one.
+  function startFromBlueprint(foundationThreadId, title) {
+    if (!foundationThreadId) return;
+    setError(null);
+    setPreInitedEmail(null);
+    setInitResult({
+      thread_id: foundationThreadId,
+      company_name: title || 'Untitled project',
+      ai_message: '',
+      questions: [],
+    });
+    setView('email_agent');
+    setStage('chat');
   }
 
   async function startWithPdf(file) {
@@ -263,6 +378,15 @@ export default function App() {
         <div className={view === 'email_agent' ? 'h-screen' : 'hidden'}>
           <EmailAgentBuilderScreen
             threadId={initResult.thread_id}
+            // Same id in every flow today — the email thread and the Foundation
+            // thread share one id under two checkpoint prefixes — and named
+            // explicitly so the picked-Blueprint path has somewhere to differ.
+            foundationThreadId={initResult.thread_id}
+            // Restored after a reload: this project's threads were opened in an
+            // earlier session, so the screen reads the email thread back rather than
+            // calling /init on it — unless that read 404s, which is what happens to
+            // someone restored into Foundations who never opened the email agent.
+            existingThread={Boolean(restored)}
             isActive={view === 'email_agent'}
             onBack={handleNewProject}
             onGoToFoundations={() => setView('foundations')}
@@ -409,7 +533,8 @@ export default function App() {
 
   return (
     <EmailLanding
-      onSelectFoundation={() => setStage('onboarding')}
+      onPickBlueprint={startFromBlueprint}
+      onBuildBlueprint={() => handlePickCampaign('foundation')}
       onUploadPdf={startWithPdf}
       onBack={() => setCampaign(null)}
       onOpenDocs={() => setShowDocs(true)}

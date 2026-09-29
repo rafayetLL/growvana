@@ -105,12 +105,16 @@ export default function DocsScreen({
     <div className="h-screen flex bg-canvas dark:bg-slate-950">
       {!standalone && (
         <div className="no-print contents">
+          {/* `hideThreads`: activeView is pinned to 'documentation' here, so no agent
+              entry is ever open and no thread list would render anyway — but say so,
+              because this sidebar mirrors the nav rather than driving it. */}
           <Sidebar
             projectName={projectName}
             activeView="documentation"
             onSelectView={onSelectView}
             onNewProject={onNewProject}
             hideFoundation={hideFoundation}
+            hideThreads
           />
         </div>
       )}

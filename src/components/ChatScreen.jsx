@@ -8,6 +8,7 @@ import { ChatMessageItem, DraftingActivityCard } from './MessageRenderers.jsx';
 import { streamChat } from '../lib/api.js';
 import { subscribeProgress, buildWebhookRequest } from '../lib/webhookBus.js';
 import { MILESTONE_KEYS, milestoneLabel } from '../lib/milestones.js';
+import { useThreadNav, useThreadResume } from '../lib/threadNav.jsx';
 
 // User-facing states (plus `not_started`):
 //   drafting   — milestone node is currently running (highest precedence)
@@ -79,6 +80,46 @@ export default function ChatScreen({ initResult, activeView = 'foundations', onS
   // `done` / error / abort.
   // const [milestoneWebSearch, setMilestoneWebSearch] = useState({});
   const [activeMilestone, setActiveMilestone] = useState(null);
+
+  // ---------------------------------------------------------------------------
+  // Reopening a past Foundation thread.
+  //
+  // `GET /threads/foundation/{id}` carries the two dicts the workflow actually keeps
+  // — what has been DRAFTED and what the user has ACCEPTED — rather than the
+  // turn-scoped `updated_milestones` the `done` frame ships. `pending_approval` is
+  // derived from them server-side exactly as the stream derives it, so a reopened
+  // thread shows the same "waiting on you" state it had when it was last open.
+  // ---------------------------------------------------------------------------
+  const { bumpThreads } = useThreadNav();
+
+  function applyThread(t) {
+    setMessages(
+      (t.messages || []).map((m) => ({ role: m.role, content: m.content, time: null })),
+    );
+    setGapQuestions((t.questions || []).filter((q) => !(q.answers || []).length));
+    setMilestoneMarkdown(t.draft_deliverables || {});
+    setPendingApproval(new Set(t.pending_approval || []));
+    // Every milestone with an accepted version HAS been accepted at some point,
+    // which is exactly what this set is for: telling a first draft from a redraft
+    // after acceptance. Both sit in pending_approval; only this tells them apart.
+    setAcceptedHistory(new Set(Object.keys(t.accepted_deliverables || {})));
+    // Nothing is running on a thread nobody is streaming.
+    setDrafting(new Set());
+    setError(null);
+  }
+
+  const { loading: resumeLoading, error: resumeError } = useThreadResume('foundation', {
+    apply: applyThread,
+    // THIS thread, not whichever one the browser last had: the app hands this screen
+    // its project thread, and every turn below streams to it. Reopening a different
+    // one would show a conversation the composer was not talking to.
+    boundThreadId: threadId,
+    // This screen is mounted (hidden) behind the other agents' views, so restore
+    // only into an empty one — never over a conversation already on screen. On a
+    // fresh run `initResult.ai_message` has already put a message here, so this is
+    // false and the opening reply is not replaced.
+    shouldRecall: () => messages.length === 0,
+  });
 
   const milestoneStatus = useMemo(
     () =>
@@ -294,6 +335,9 @@ export default function ChatScreen({ initResult, activeView = 'foundations', onS
           setMilestoneMarkdown((prev) => ({ ...prev, ...updated }));
           // pending_approval is authoritative — backend sends the full list each turn.
           setPendingApproval(pending);
+          // This thread has moved to the top of the sidebar's list, and may have
+          // gained a company name it did not have when that list was fetched.
+          bumpThreads();
           if (newlyAccepted.size > 0) {
             setAcceptedHistory((prev) => {
               const next = new Set(prev);
@@ -407,6 +451,19 @@ export default function ChatScreen({ initResult, activeView = 'foundations', onS
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto thin-scroll px-6 md:px-10 py-6">
           <div className="max-w-[900px] mx-auto flex flex-col gap-5">
+            {resumeLoading && (
+              <p className="text-[12.5px] text-ink-400 dark:text-slate-500">
+                Reopening this project…
+              </p>
+            )}
+            {/* Only a real read failure. A 404 is NOT shown: a thread opened from a
+                Blueprint PDF has no Foundation behind it at all, so "no such thread"
+                is the ordinary answer there rather than something gone wrong. */}
+            {resumeError && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-[12.5px] text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300">
+                {resumeError}
+              </div>
+            )}
             {messages.map((m, i) => {
               if (m.role === 'milestone') {
                 return (
