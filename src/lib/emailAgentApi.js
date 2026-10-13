@@ -46,8 +46,8 @@
 //                     kind). `sequence` is a list of {step_number, email_html}
 //                     entries (or null on single kind).
 //
-//       `images`    — { homepage: [], attachment: [{image_url, image_title,
-//                     metadata_description}] } — the images THIS turn attached,
+//       `images`    — { homepage: [], attachment: [{image_url, title,
+//                     description}] } — the images THIS turn attached,
 //                     as the agent described them. Earlier turns' are not repeated.
 //       `files`     — [{attachment_id, file_url, file_name, mime_type, title,
 //                     description}] — the non-image files THIS turn attached.

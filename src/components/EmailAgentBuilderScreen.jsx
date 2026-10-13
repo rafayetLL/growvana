@@ -36,7 +36,7 @@ const TABS = [
 ];
 
 // `images`: the campaign's images grouped by where they came from, each
-// `{ image_id, image_url, image_title, metadata_description }`. `/init` gives the
+// `{ image_id, image_url, title, description }`. `/init` gives the
 // homepage ones; each turn's `done` gives the images THAT turn attached, which are
 // appended. `image_id` (`image-5`) is what the agent calls it, like a file's
 // `attachment_id` (`att-4`); "Mention" puts `[image-5]` / `[att-4]` in the message.
@@ -1941,7 +1941,7 @@ function ImageModal({ image, onClose, onMention }) {
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={image.image_title || 'Image'}
+      aria-label={image.title || 'Image'}
       onClick={onClose}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 md:p-8"
     >
@@ -1960,17 +1960,17 @@ function ImageModal({ image, onClose, onMention }) {
         <div className="flex min-h-0 flex-1 items-center justify-center bg-cream-100 dark:bg-slate-950 p-4">
           <img
             src={image.image_url}
-            alt={image.image_title || ''}
+            alt={image.title || ''}
             className="max-h-[60vh] w-full object-contain md:max-h-[80vh]"
           />
         </div>
         <div className="flex max-h-[30vh] w-full shrink-0 flex-col overflow-y-auto border-t border-botanical-line dark:border-slate-800 p-5 md:max-h-[80vh] md:w-[340px] md:border-l md:border-t-0">
           <h3 className="pr-8 font-display text-[18px] font-semibold text-forest-900 dark:text-slate-100">
-            {image.image_title || 'Untitled image'}
+            {image.title || 'Untitled image'}
           </h3>
-          {image.metadata_description ? (
+          {image.description ? (
             <p className="mt-2 whitespace-pre-line text-[13px] leading-relaxed text-botanical-text2 dark:text-slate-400">
-              {image.metadata_description}
+              {image.description}
             </p>
           ) : (
             <p className="mt-2 text-[13px] italic text-botanical-text3 dark:text-slate-500">
@@ -2130,25 +2130,25 @@ function ImagesCanvas({ images, files, onMention }) {
                   >
                     <img
                       src={img.image_url}
-                      alt={img.image_title || ''}
+                      alt={img.title || ''}
                       loading="lazy"
                       className="h-full w-full object-contain p-2 group-hover:scale-[1.03] transition-transform"
                     />
                   </button>
-                  {(img.image_title || img.image_id) && (
+                  {(img.title || img.image_id) && (
                     <div className="border-t border-botanical-line dark:border-slate-800 px-2.5 py-2">
-                      {img.image_title && (
+                      {img.title && (
                         <button
                           type="button"
                           onClick={() => setOpenImage(img)}
                           className="block w-full text-left"
                         >
                           <div className="text-[12px] font-medium text-forest-900 dark:text-slate-100 line-clamp-2">
-                            {img.image_title}
+                            {img.title}
                           </div>
-                          {img.metadata_description && (
+                          {img.description && (
                             <div className="mt-0.5 text-[11.5px] text-botanical-text2 dark:text-slate-400 line-clamp-3">
-                              {img.metadata_description}
+                              {img.description}
                             </div>
                           )}
                         </button>
