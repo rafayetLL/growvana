@@ -2070,7 +2070,7 @@ function FileModal({ file, onClose, onMention }) {
               }
             />
             <a
-              href={file.file_url}
+              href={file.attachment_url}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-moss-700 dark:text-moss-400 hover:underline"
@@ -2169,7 +2169,7 @@ function ImagesCanvas({ images, files, onMention }) {
       {/* Files were a plain list of links opening the file, one per row. Restore: put
           back this <a> per file inside a `flex flex-col gap-2` div, in place of the grid
           below, and drop FileModal.
-          <a key={f.attachment_id} href={f.file_url} target="_blank" rel="noopener noreferrer"
+          <a key={f.attachment_id} href={f.attachment_url} target="_blank" rel="noopener noreferrer"
              className="flex items-start gap-3 rounded-xl border border-botanical-line dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-3 hover:border-moss-400 dark:hover:border-moss-500 transition">
             <IconBook width={16} height={16} className="mt-0.5 shrink-0 text-moss-700 dark:text-moss-400" />
             <div className="min-w-0">

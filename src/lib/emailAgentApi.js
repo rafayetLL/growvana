@@ -49,8 +49,7 @@
 //       `images`    — { homepage: [], attachment: [{image_url, title,
 //                     description}] } — the images THIS turn attached,
 //                     as the agent described them. Earlier turns' are not repeated.
-//       `files`     — [{attachment_id, file_url, file_name, mime_type, title,
-//                     description}] — the non-image files THIS turn attached.
+//       `files`     — [{attachment_id, attachment_url, title, description}] — the non-image files THIS turn attached.
 //
 //       Images are embedded in `email_html` by their URL; nothing to substitute.
 //   - { type: 'error', status, code, message }
