@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Sidebar from './Sidebar.jsx';
 import Composer from './Composer.jsx';
-import GapQuestions from './GapQuestions.jsx';
+import GapQuestions, { gapStillOpen } from './GapQuestions.jsx';
 import { ChatMessageItem } from './MessageRenderers.jsx';
 import { initMetaAdAgent, initMetaAdAgentWithPdf, streamMetaAdAgent } from '../lib/metaAdAgentApi.js';
 import { buildWebhookRequest, subscribeProgress } from '../lib/webhookBus.js';
@@ -389,7 +389,11 @@ export default function MetaAdAgentBuilderScreen({
     setMessages(
       (t.messages || []).map((m) => ({ role: m.role, content: m.content, time: null })),
     );
-    setGapQuestions((t.questions || []).filter((q) => !(q.answers || []).length));
+    // The card is shown once, at the start of the thread, and never again once
+    // submitted — the whole list, so answers stay aligned with their questions.
+    // Matched on the answers message, not on any user message: the ad picker is
+    // not locked while the card is up, so picking ads first must not hide it.
+    setGapQuestions(gapStillOpen(t, 'Here are my campaign answers') ? t.questions || [] : []);
     setAds(t.ads || []);
     // Both, and they are different things: `selected` is what is ticked in the
     // picker, `confirmed` is what has actually been sent to be diagnosed. On a

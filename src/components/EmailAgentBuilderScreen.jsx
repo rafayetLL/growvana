@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Sidebar from './Sidebar.jsx';
 import Composer from './Composer.jsx';
-import GapQuestions from './GapQuestions.jsx';
+import GapQuestions, { gapStillOpen } from './GapQuestions.jsx';
 import ThreadOverridePanel from './ThreadOverridePanel.jsx';
 import { ChatMessageItem } from './MessageRenderers.jsx';
 import {
@@ -21,27 +21,68 @@ import {
   IconBook,
   IconMail,
   IconCheck,
+  IconImage,
+  IconX,
+  IconLink,
+  IconPlus,
+  IconDoc,
 } from './icons.jsx';
 
 const TABS = [
   { id: 'strategy', label: 'Strategy', icon: IconCompass, hint: 'Plan from the CMO' },
   { id: 'content', label: 'Content', icon: IconBook, hint: 'Generated copy' },
   { id: 'design', label: 'Design', icon: IconMail, hint: 'Rendered HTML' },
+  { id: 'images', label: 'Images', icon: IconImage, hint: 'Images this campaign can use' },
 ];
+
+// `images`: the campaign's images grouped by where they came from, each
+// `{ image_id, image_url, image_title, metadata_description }`. `/init` gives the
+// homepage ones; each turn's `done` gives the images THAT turn attached, which are
+// appended. `image_id` (`image-5`) is what the agent calls it, like a file's
+// `attachment_id` (`att-4`); "Mention" puts `[image-5]` / `[att-4]` in the message.
+const NO_IMAGES = { homepage: [], attachment: [] };
+
+function asImages(images) {
+  return {
+    homepage: images?.homepage || [],
+    attachment: images?.attachment || [],
+  };
+}
+
+// Appends what a turn added, skipping any already shown (a re-sent file).
+function mergeByKey(prev, added, key) {
+  const seen = new Set(prev.map((x) => x[key]));
+  return [...prev, ...(added || []).filter((x) => !seen.has(x[key]))];
+}
+
+// Steps in step order. Copy writers run in parallel, so webhooks for step 3 can
+// arrive before step 1's; a new step is appended, then the list is sorted.
+function sortSteps(steps) {
+  return [...(steps || [])].sort((a, b) => (a.step_number ?? 0) - (b.step_number ?? 0));
+}
+
+// Only the steps a plan still has. After a plan edit removes a step, its copy and
+// design are gone on the server, but the webhook handlers only add or update steps.
+function keepPlannedSteps(list, plan) {
+  const planned = plan?.sequence_email_plan?.steps;
+  if (!list?.sequence || !planned) return list;
+  const numbers = new Set(planned.map((s) => s.step_number));
+  return { ...list, sequence: list.sequence.filter((s) => numbers.has(s.step_number)) };
+}
+
+// One toast per thing being worked on: a newer message replaces the older one for
+// the same plan, email or design instead of stacking (a 4-email batch sent ~24).
+function toastGroup(stage, data) {
+  if (stage.startsWith('email.plan') || stage === 'email.segmentation_strategy' || stage === 'email.warnings') {
+    return 'plan';
+  }
+  if (stage === 'email.html') return 'design';
+  return `copy-${data?.step_number ?? 'single'}`;
+}
 
 function newTaskId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
   return 'task-' + Math.random().toString(36).slice(2, 10);
-}
-
-function substituteImageTokens(html, imagesMap) {
-  if (!html) return '';
-  if (!imagesMap || Object.keys(imagesMap).length === 0) return html;
-  let out = html;
-  for (const [token, dataUri] of Object.entries(imagesMap)) {
-    out = out.split(token).join(dataUri);
-  }
-  return out;
 }
 
 function useSplit(initial = 460, min = 360, max = 720) {
@@ -141,25 +182,34 @@ export default function EmailAgentBuilderScreen({
   const [latestHtml, setLatestHtml] = useState(null);
 
   const [activeTab, setActiveTab] = useState('strategy');
-  // Email image assets: [{ name, url, alt_text? }]. Mirrors the backend's
-  // EmailAssetInput schema 1:1. Persisted in screen state for the lifetime
-  // of this mount — refresh wipes them (intentional, no re-fetch from
-  // backend). Sent on every stream turn so the LLM has the current image
-  // set in mind; also used at iframe-render time to substitute
-  // {{IMAGE_<name>}} tokens with their URLs.
-  const [emailAssets, setEmailAssets] = useState([]);
+  const [campaignImages, setCampaignImages] = useState(NO_IMAGES);
+  // Non-image files attached in the chat, as the agent described them.
+  const [campaignFiles, setCampaignFiles] = useState([]);
+  // A "Mention" click on an image or file: the Composer adds `[image-5]` / `[att-4]`.
+  const [mention, setMention] = useState(null);
+  const mentionInMessage = useCallback(
+    (id) => setMention({ text: `[${id}]`, key: `${id}-${Date.now()}` }),
+    []
+  );
   // Tracks which node is currently drafting this turn. Set on the first
-  // `email_content_drafting` / `email_design_drafting` SSE frame and cleared
-  // on `done`. The design node is a ReAct loop so the event re-fires per
+  // `email_plan_drafting` / `email_content_drafting` / `email_design_drafting`
+  // SSE frame and cleared on `done`. Each node is a ReAct loop so the event re-fires per
   // re-entry — we dedupe by storing only the last `name` seen.
   const [draftingAgent, setDraftingAgent] = useState(null);
   const [webhookToasts, setWebhookToasts] = useState([]);
   const [chatW, onSplitDown] = useSplit(460, 360, 720);
 
-  const pushToast = useCallback((msg) => {
-    const id = Date.now() + Math.random();
-    setWebhookToasts((prev) => [...prev.slice(-4), { id, text: msg }]);
-    setTimeout(() => setWebhookToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
+  // `group` (optional): a toast of the same group REPLACES the one on screen and
+  // restarts its 4 s, so each email shows one changing toast rather than a pile.
+  const toastTimers = useRef({});
+  const pushToast = useCallback((msg, group) => {
+    const id = group ?? Date.now() + Math.random();
+    clearTimeout(toastTimers.current[id]);
+    setWebhookToasts((prev) => [...prev.filter((t) => t.id !== id).slice(-4), { id, text: msg }]);
+    toastTimers.current[id] = setTimeout(() => {
+      setWebhookToasts((prev) => prev.filter((t) => t.id !== id));
+      delete toastTimers.current[id];
+    }, 4000);
   }, []);
 
   const abortRef = useRef(null);
@@ -191,13 +241,14 @@ export default function EmailAgentBuilderScreen({
     setMessages(
       (t.messages || []).map((m) => ({ role: m.role, content: m.content, time: null })),
     );
-    // Only questions still unanswered put the card back up; answering is what
-    // clears it, and it is never asked twice.
-    setGapQuestions((t.questions || []).filter((q) => !(q.answers || []).length));
+    // The card is shown once, at the start of the thread, and never again once
+    // submitted — the whole list, so answers stay aligned with their questions.
+    setGapQuestions(gapStillOpen(t, 'Here are my gap answers') ? t.questions || [] : []);
     setLatestPlan(t.email_plan || null);
     setLatestContent(t.content || null);
     setLatestHtml(t.html || null);
-    setEmailAssets(t.assets || []);
+    setCampaignImages(asImages(t.images));
+    setCampaignFiles(t.files || []);
     setInitError(null);
     setBlueprintMissing(false);
     setTurnError(null);
@@ -245,7 +296,8 @@ export default function EmailAgentBuilderScreen({
     setLatestPlan(null);
     setLatestContent(null);
     setLatestHtml(null);
-    setEmailAssets([]);
+    setCampaignImages(NO_IMAGES);
+    setCampaignFiles([]);
     setStreamingText(null);
     setTyping(false);
     setTurnError(null);
@@ -281,6 +333,7 @@ export default function EmailAgentBuilderScreen({
       const intro = res?.ai_message || '';
       setMessages(intro ? [{ role: 'assistant', content: intro, time: Date.now() }] : []);
       setGapQuestions(res?.questions || []);
+      setCampaignImages(asImages(res?.images));
       setPhase('ready');
       markLoaded(target);
       bumpThreads();
@@ -341,6 +394,7 @@ export default function EmailAgentBuilderScreen({
         setMessages([{ role: 'assistant', content: intro, time: Date.now() }]);
       }
       setGapQuestions(preInitedResult.questions || []);
+      setCampaignImages(asImages(preInitedResult.images));
       return;
     }
 
@@ -363,6 +417,7 @@ export default function EmailAgentBuilderScreen({
           setMessages([{ role: 'assistant', content: intro, time: Date.now() }]);
         }
         setGapQuestions(res?.questions || []);
+        setCampaignImages(asImages(res?.images));
         // The thread is live from here, so the sidebar can list it and a refresh
         // can find it again.
         markLoaded(thisThread);
@@ -392,7 +447,7 @@ export default function EmailAgentBuilderScreen({
     });
   }, [messages, gapQuestions, streamingText, typing]);
 
-  async function runStream({ user_message, gap_answers, attachment_urls, fresh_assets }) {
+  async function runStream({ user_message, gap_answers, attachment_urls }) {
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -420,12 +475,40 @@ export default function EmailAgentBuilderScreen({
       webhookSub = subscribeProgress(taskId, (whEvt) => {
         if (whEvt.status !== 'success' || !whEvt.data) return;
         const { stage, data } = whEvt;
-        if (whEvt.success_message) pushToast(whEvt.success_message);
+        if (whEvt.success_message) pushToast(whEvt.success_message, toastGroup(stage, data));
+
+        // --- Whole plan: sent after every plan write (a new plan or an edit).
+        // Replaces what is shown, so steps a rewrite or an edit removed go too —
+        // from the plan, and from the copy and the design.
+        if (stage === 'email.plan') {
+          if (data.email_plan) {
+            setLatestPlan(data.email_plan);
+            setLatestContent((prev) => keepPlannedSteps(prev, data.email_plan));
+            setLatestHtml((prev) => keepPlannedSteps(prev, data.email_plan));
+          }
+          setActiveTab('strategy');
 
         // --- Plan granular webhooks ---
-        if (stage === 'email.plan.metadata') {
-          setLatestPlan((prev) => ({ ...(prev || {}), ...data }));
+        } else if (stage === 'email.plan.metadata') {
+          // MERGE the overview into the plan rather than replacing its parts: the
+          // overview carries no steps and no notes, and a plan EDIT sends it after
+          // the steps are already on screen — replacing would wipe them.
+          setLatestPlan((prev) => {
+            const base = prev || {};
+            const next = { ...base, ...data };
+            if (data.single_email_plan) {
+              next.single_email_plan = { ...(base.single_email_plan || {}), ...data.single_email_plan };
+            }
+            if (data.sequence_email_plan) {
+              next.sequence_email_plan = { ...(base.sequence_email_plan || {}), ...data.sequence_email_plan };
+            }
+            return next;
+          });
           setActiveTab('strategy');
+        } else if (stage === 'email.segmentation_strategy') {
+          setLatestPlan((prev) => ({ ...(prev || {}), segmentation_strategy: data.segmentation_strategy }));
+        } else if (stage === 'email.warnings') {
+          setLatestPlan((prev) => ({ ...(prev || {}), warnings: data.warnings || [] }));
         } else if (stage === 'email.plan.content_direction') {
           setLatestPlan((prev) => {
             if (!prev) return prev;
@@ -436,7 +519,7 @@ export default function EmailAgentBuilderScreen({
               const steps = found
                 ? existing.map((s) => s.step_number === data.step_number ? { ...s, content_direction: data.content_direction } : s)
                 : [...existing, { step_number: data.step_number, content_direction: data.content_direction }];
-              return { ...prev, sequence_email_plan: { ...seqPlan, steps } };
+              return { ...prev, sequence_email_plan: { ...seqPlan, steps: sortSteps(steps) } };
             }
             const sp = prev.single_email_plan || {};
             return { ...prev, single_email_plan: { ...sp, content_direction: data.content_direction } };
@@ -451,7 +534,7 @@ export default function EmailAgentBuilderScreen({
               const steps = found
                 ? existing.map((s) => s.step_number === data.step_number ? { ...s, design_direction: data.design_direction } : s)
                 : [...existing, { step_number: data.step_number, design_direction: data.design_direction }];
-              return { ...prev, sequence_email_plan: { ...seqPlan, steps } };
+              return { ...prev, sequence_email_plan: { ...seqPlan, steps: sortSteps(steps) } };
             }
             const sp = prev.single_email_plan || {};
             return { ...prev, single_email_plan: { ...sp, design_direction: data.design_direction } };
@@ -465,7 +548,7 @@ export default function EmailAgentBuilderScreen({
             const steps = idx >= 0
               ? existing.map((s, i) => (i === idx ? entry : s))
               : [...existing, entry];
-            return { ...prev, sequence_email_plan: { ...seqPlan, steps } };
+            return { ...prev, sequence_email_plan: { ...seqPlan, steps: sortSteps(steps) } };
           });
           setActiveTab('strategy');
         } else if (stage === 'email.plan.step') {
@@ -476,7 +559,7 @@ export default function EmailAgentBuilderScreen({
             const steps = idx >= 0
               ? existing.map((s, i) => (i === idx ? { ...s, ...data } : s))
               : [...existing, data];
-            return { ...prev, sequence_email_plan: { ...seqPlan, steps } };
+            return { ...prev, sequence_email_plan: { ...seqPlan, steps: sortSteps(steps) } };
           });
 
         // --- Content webhooks (streaming + edits) ---
@@ -506,7 +589,7 @@ export default function EmailAgentBuilderScreen({
               const updatedSeq = idx >= 0
                 ? seq.map((s, i) => (i === idx ? { ...s, [field]: value } : s))
                 : [...seq, { step_number: data.step_number, [field]: value }];
-              return { ...base, sequence: updatedSeq };
+              return { ...base, sequence: sortSteps(updatedSeq) };
             }
             const base = prev || { kind: 'single', single: {}, sequence: null };
             return { ...base, single: { ...(base.single || {}), [field]: value } };
@@ -533,7 +616,6 @@ export default function EmailAgentBuilderScreen({
         user_message,
         gap_answers,
         attachment_urls,
-        email_assets: fresh_assets,
         webhook_request,
         signal: controller.signal,
       })) {
@@ -541,10 +623,15 @@ export default function EmailAgentBuilderScreen({
           assistantText += evt.content || '';
           setStreamingText(assistantText);
         } else if (
+          evt.type === 'email_plan_drafting' ||
           evt.type === 'email_content_drafting' ||
           evt.type === 'email_design_drafting'
         ) {
-          const name = evt.name || (evt.type === 'email_content_drafting' ? 'email_content' : 'email_design');
+          const name = evt.name || {
+            email_plan_drafting: 'email_planner',
+            email_content_drafting: 'email_content',
+            email_design_drafting: 'email_design',
+          }[evt.type];
           if (name === 'email_content') firedContent = true;
           if (name === 'email_design') firedDesign = true;
           setDraftingAgent((cur) => (cur === name ? cur : name));
@@ -560,12 +647,27 @@ export default function EmailAgentBuilderScreen({
             const newPlanKey = JSON.stringify(evt.email_plan);
             if (newPlanKey !== priorPlanKey) firedPlan = true;
             setLatestPlan(evt.email_plan);
+          } else if (priorPlanKey === null) {
+            // No plan before this turn and none saved by it: whatever the plan
+            // webhooks drew (a first plan that failed midway, sent back blank) goes.
+            setLatestPlan(null);
           }
           if (evt.content) {
             setLatestContent(evt.content);
           }
           if (evt.html) {
             setLatestHtml(evt.html);
+          }
+          // Only what THIS turn attached arrives here — appended to what is shown.
+          if (evt.images) {
+            const added = asImages(evt.images);
+            setCampaignImages((prev) => ({
+              homepage: mergeByKey(prev.homepage, added.homepage, 'image_url'),
+              attachment: mergeByKey(prev.attachment, added.attachment, 'image_url'),
+            }));
+          }
+          if (evt.files?.length) {
+            setCampaignFiles((prev) => mergeByKey(prev, evt.files, 'attachment_id'));
           }
           if (firedDesign) {
             setActiveTab('design');
@@ -594,12 +696,13 @@ export default function EmailAgentBuilderScreen({
     }
   }
 
-  function handleSendText(text, attachments, freshAssets) {
+  function handleSendText(text, attachments) {
     setMessages((prev) => [
       ...prev,
       { role: 'user', content: text, attachments, time: Date.now() },
     ]);
-    runStream({ user_message: text, attachment_urls: attachments, fresh_assets: freshAssets });
+    // A file-only turn sends no `user_message` at all; the backend builds it from the files.
+    runStream({ user_message: text || undefined, attachment_urls: attachments });
   }
 
   function handleSubmitGapAnswers(answers) {
@@ -729,8 +832,9 @@ export default function EmailAgentBuilderScreen({
               disabled={busy || gapQuestions.length > 0 || initLoading || !!initError}
               onSend={handleSendText}
               placeholder="Tell the email agent what to build…"
-              emailAssets={emailAssets}
-              onUpdateEmailAssets={setEmailAssets}
+              attachHint="an image can be used in the email; any other file, like a brief, is read for context"
+              insert={mention}
+              allowFilesOnly
             />
           </div>
 
@@ -749,6 +853,9 @@ export default function EmailAgentBuilderScreen({
               hasPlan={!!latestPlan}
               hasContent={!!(latestContent?.single || latestContent?.sequence)}
               hasHtml={hasAnyHtml(latestHtml?.kind, latestHtml?.single, latestHtml?.sequence)}
+              hasImages={
+                campaignImages.homepage.length + campaignImages.attachment.length + campaignFiles.length > 0
+              }
             />
 
             <div className="flex-1 overflow-y-auto thin-scroll">
@@ -768,7 +875,13 @@ export default function EmailAgentBuilderScreen({
                   kind={latestHtml?.kind}
                   single={latestHtml?.single}
                   sequence={latestHtml?.sequence}
-                  emailAssets={emailAssets}
+                />
+              )}
+              {activeTab === 'images' && (
+                <ImagesCanvas
+                  images={campaignImages}
+                  files={campaignFiles}
+                  onMention={mentionInMessage}
                 />
               )}
             </div>
@@ -858,11 +971,12 @@ function ChatHeader() {
   );
 }
 
-function CanvasTabs({ activeTab, setActiveTab, hasPlan, hasContent, hasHtml }) {
+function CanvasTabs({ activeTab, setActiveTab, hasPlan, hasContent, hasHtml, hasImages }) {
   const availability = {
     strategy: hasPlan,
     content: hasContent,
     design: hasHtml,
+    images: hasImages,
   };
   return (
     <div className="h-12 px-3 flex items-center gap-1 border-b border-botanical-line dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0">
@@ -901,6 +1015,7 @@ function CanvasTabs({ activeTab, setActiveTab, hasPlan, hasContent, hasHtml }) {
 
 const DRAFTING_LABELS = {
   cmo_agent: 'Thinking',
+  email_planner: 'Planning email',
   email_content: 'Writing copy',
   email_design: 'Designing email',
 };
@@ -1613,7 +1728,7 @@ function hasAnyHtml(kind, single, sequence) {
   return false;
 }
 
-function DesignCanvas({ kind, single, sequence, emailAssets }) {
+function DesignCanvas({ kind, single, sequence }) {
   const [viewport, setViewport] = useState('desktop');
   const [stepIdx, setStepIdx] = useState(0);
 
@@ -1627,22 +1742,6 @@ function DesignCanvas({ kind, single, sequence, emailAssets }) {
     }
     return '';
   }, [kind, single, sequence, stepIdx]);
-
-  // Map for {{<name>}} substitution: user-uploaded emailAssets keyed by
-  // the user-supplied `name` verbatim — we wrap it in {{ }} client-side,
-  // no `IMAGE_` or any other prefix added.
-  const mergedImageMap = useMemo(() => {
-    const out = {};
-    for (const a of emailAssets || []) {
-      out[`{{${a.name}}}`] = a.url;
-    }
-    return out;
-  }, [emailAssets]);
-
-  const substituted = useMemo(
-    () => substituteImageTokens(html, mergedImageMap),
-    [html, mergedImageMap]
-  );
 
   if (!hasHtml) {
     return (
@@ -1703,7 +1802,7 @@ function DesignCanvas({ kind, single, sequence, emailAssets }) {
         </div>
         <iframe
           title="Designed email preview"
-          srcDoc={substituted}
+          srcDoc={html}
           sandbox="allow-same-origin"
           className="block w-full"
           style={{ height: viewport === 'mobile' ? 760 : 900, border: 0 }}
@@ -1756,6 +1855,384 @@ function ViewportToggle({ viewport, setViewport }) {
 // =============================================================
 // Shared helpers
 // =============================================================
+
+// =============================================================
+// Images tab — the images this campaign can use, one section per source
+// =============================================================
+
+const IMAGE_SECTIONS = [
+  {
+    key: 'attachment',
+    label: 'Images you attached',
+    note: 'Sent in the chat and described by the agent. It can use them in the email.',
+  },
+  {
+    key: 'homepage',
+    label: 'Homepage images',
+    note: 'Found on your homepage when your Foundation was built.',
+  },
+];
+
+function SectionHead({ label, count, noun, note }) {
+  return (
+    <>
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="font-display text-[20px] font-semibold text-forest-900 dark:text-slate-100">
+          {label}
+        </h2>
+        <span className="text-[12px] text-botanical-text3 dark:text-slate-400">
+          {count} {count === 1 ? noun : `${noun}s`}
+        </span>
+      </div>
+      <p className="mt-1 text-[12.5px] text-botanical-text2 dark:text-slate-400">{note}</p>
+    </>
+  );
+}
+
+// What the agent calls an image or file — `image-5`, `att-4`. Shown on every tile
+// so the user can name it in the chat. Nothing when the id is missing (a thread
+// loaded from a backend older than `image_id`).
+function IdBadge({ id }) {
+  if (!id) return null;
+  return (
+    <span className="inline-flex items-center rounded-md border border-botanical-line dark:border-slate-700 bg-cream-100 dark:bg-slate-800 px-1.5 py-0.5 font-mono text-[11px] text-forest-900 dark:text-slate-200">
+      {id}
+    </span>
+  );
+}
+
+// Adds `[id]` to the message being written. Stops the click reaching the tile, so
+// it mentions without opening the preview.
+function MentionButton({ id, onMention }) {
+  if (!id || !onMention) return null;
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onMention(id);
+      }}
+      title={`Add [${id}] to your message`}
+      className="inline-flex items-center gap-1 rounded-md border border-moss-300 dark:border-moss-500/40 px-2 py-0.5 text-[11.5px] font-medium text-moss-700 dark:text-moss-400 hover:bg-moss-50 dark:hover:bg-moss-500/15 transition"
+    >
+      <IconPlus width={11} height={11} /> Mention
+    </button>
+  );
+}
+
+// `PDF`, `DOCX`… from the file name, else from the MIME type.
+function fileKind(file) {
+  const name = file.file_name || '';
+  const ext = name.includes('.') ? name.split('.').pop() : (file.mime_type || '').split('/').pop();
+  return (ext || 'file').toUpperCase().slice(0, 6);
+}
+
+// One image, large, with its whole title and description — the grid tile clamps
+// both. Closes on Escape, on the backdrop and on the X. "Mention" adds its id to
+// the message and closes.
+function ImageModal({ image, onClose, onMention }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={image.image_title || 'Image'}
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 md:p-8"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative flex max-h-full w-full max-w-[1100px] flex-col overflow-hidden rounded-2xl border border-botanical-line dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl md:flex-row"
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute right-3 top-3 z-10 grid h-8 w-8 place-items-center rounded-full bg-white/90 dark:bg-slate-800/90 text-forest-900 dark:text-slate-100 hover:bg-white dark:hover:bg-slate-700 transition"
+        >
+          <IconX width={16} height={16} />
+        </button>
+        <div className="flex min-h-0 flex-1 items-center justify-center bg-cream-100 dark:bg-slate-950 p-4">
+          <img
+            src={image.image_url}
+            alt={image.image_title || ''}
+            className="max-h-[60vh] w-full object-contain md:max-h-[80vh]"
+          />
+        </div>
+        <div className="flex max-h-[30vh] w-full shrink-0 flex-col overflow-y-auto border-t border-botanical-line dark:border-slate-800 p-5 md:max-h-[80vh] md:w-[340px] md:border-l md:border-t-0">
+          <h3 className="pr-8 font-display text-[18px] font-semibold text-forest-900 dark:text-slate-100">
+            {image.image_title || 'Untitled image'}
+          </h3>
+          {image.metadata_description ? (
+            <p className="mt-2 whitespace-pre-line text-[13px] leading-relaxed text-botanical-text2 dark:text-slate-400">
+              {image.metadata_description}
+            </p>
+          ) : (
+            <p className="mt-2 text-[13px] italic text-botanical-text3 dark:text-slate-500">
+              No description yet.
+            </p>
+          )}
+          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+            <IdBadge id={image.image_id} />
+            <MentionButton
+              id={image.image_id}
+              onMention={
+                onMention &&
+                ((id) => {
+                  onMention(id);
+                  onClose();
+                })
+              }
+            />
+            <a
+              href={image.image_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-moss-700 dark:text-moss-400 hover:underline"
+            >
+              <IconLink width={14} height={14} /> Open original
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// One file, with its whole title and description and a link to open it — the
+// image preview's twin, for a brief or a PDF the agent reads but never embeds.
+function FileModal({ file, onClose, onMention }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={file.title || file.file_name || 'File'}
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 md:p-8"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative flex w-full max-w-[560px] flex-col overflow-hidden rounded-2xl border border-botanical-line dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl"
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute right-3 top-3 z-10 grid h-8 w-8 place-items-center rounded-full bg-white/90 dark:bg-slate-800/90 text-forest-900 dark:text-slate-100 hover:bg-white dark:hover:bg-slate-700 transition"
+        >
+          <IconX width={16} height={16} />
+        </button>
+        <div className="flex items-center gap-4 border-b border-botanical-line dark:border-slate-800 bg-cream-100 dark:bg-slate-950 p-5">
+          <div className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-moss-100 dark:bg-moss-500/15 text-moss-700 dark:text-moss-400">
+            <IconDoc width={24} height={24} />
+          </div>
+          <div className="min-w-0 pr-8">
+            <div className="truncate text-[13px] font-medium text-forest-900 dark:text-slate-100">
+              {file.file_name || file.attachment_id}
+            </div>
+            <div className="mt-0.5 text-[12px] text-botanical-text3 dark:text-slate-500">{fileKind(file)}</div>
+          </div>
+        </div>
+        <div className="max-h-[60vh] overflow-y-auto p-5">
+          <h3 className="font-display text-[18px] font-semibold text-forest-900 dark:text-slate-100">
+            {file.title || file.file_name || 'Untitled file'}
+          </h3>
+          {file.description ? (
+            <p className="mt-2 whitespace-pre-line text-[13px] leading-relaxed text-botanical-text2 dark:text-slate-400">
+              {file.description}
+            </p>
+          ) : (
+            <p className="mt-2 text-[13px] italic text-botanical-text3 dark:text-slate-500">
+              No description yet.
+            </p>
+          )}
+          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+            <IdBadge id={file.attachment_id} />
+            <MentionButton
+              id={file.attachment_id}
+              onMention={
+                onMention &&
+                ((id) => {
+                  onMention(id);
+                  onClose();
+                })
+              }
+            />
+            <a
+              href={file.file_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-moss-700 dark:text-moss-400 hover:underline"
+            >
+              <IconLink width={14} height={14} /> Open file
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// The images and files a campaign can use. Every tile shows its id and a "Mention"
+// button that adds `[image-5]` / `[att-4]` to the message (`onMention`); clicking
+// the tile opens it large.
+function ImagesCanvas({ images, files, onMention }) {
+  const [openImage, setOpenImage] = useState(null);
+  const closeImage = useCallback(() => setOpenImage(null), []);
+  const [openFile, setOpenFile] = useState(null);
+  const closeFile = useCallback(() => setOpenFile(null), []);
+  const sections = IMAGE_SECTIONS.filter((s) => (images?.[s.key] || []).length > 0);
+  if (sections.length === 0 && !(files || []).length) {
+    return (
+      <CanvasEmpty
+        icon={<IconImage width={20} height={20} />}
+        title="No images yet"
+        body="Images from your homepage appear here once the campaign is opened from a Foundation, and so does anything you attach in the chat."
+      />
+    );
+  }
+
+  return (
+    <div className="p-6 md:p-8 max-w-[960px] mx-auto">
+      <div className="flex items-center gap-2 mb-3 text-[11px] tracking-wider uppercase font-semibold text-moss-700 dark:text-moss-400">
+        <IconImage width={14} height={14} /> Image library
+      </div>
+      {sections.map((s) => {
+        const list = images[s.key];
+        return (
+          <section key={s.key} className="mt-6 first:mt-0">
+            <SectionHead label={s.label} count={list.length} noun="image" note={s.note} />
+            <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {list.map((img) => (
+                // A div, not one button: the tile holds its own "Mention" button,
+                // and a button inside a button is invalid. Was one <button> with
+                // the same classes plus `text-left`.
+                <div
+                  key={img.image_url}
+                  className="group flex flex-col rounded-xl border border-botanical-line dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden hover:border-moss-400 dark:hover:border-moss-500 transition"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setOpenImage(img)}
+                    title="View larger"
+                    className="aspect-square overflow-hidden"
+                  >
+                    <img
+                      src={img.image_url}
+                      alt={img.image_title || ''}
+                      loading="lazy"
+                      className="h-full w-full object-contain p-2 group-hover:scale-[1.03] transition-transform"
+                    />
+                  </button>
+                  {(img.image_title || img.image_id) && (
+                    <div className="border-t border-botanical-line dark:border-slate-800 px-2.5 py-2">
+                      {img.image_title && (
+                        <button
+                          type="button"
+                          onClick={() => setOpenImage(img)}
+                          className="block w-full text-left"
+                        >
+                          <div className="text-[12px] font-medium text-forest-900 dark:text-slate-100 line-clamp-2">
+                            {img.image_title}
+                          </div>
+                          {img.metadata_description && (
+                            <div className="mt-0.5 text-[11.5px] text-botanical-text2 dark:text-slate-400 line-clamp-3">
+                              {img.metadata_description}
+                            </div>
+                          )}
+                        </button>
+                      )}
+                      <div className="mt-1.5 flex items-center justify-between gap-2">
+                        <IdBadge id={img.image_id} />
+                        <MentionButton id={img.image_id} onMention={onMention} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        );
+      })}
+      {openImage && <ImageModal image={openImage} onClose={closeImage} onMention={onMention} />}
+      {/* Files were a plain list of links opening the file, one per row. Restore: put
+          back this <a> per file inside a `flex flex-col gap-2` div, in place of the grid
+          below, and drop FileModal.
+          <a key={f.attachment_id} href={f.file_url} target="_blank" rel="noopener noreferrer"
+             className="flex items-start gap-3 rounded-xl border border-botanical-line dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-3 hover:border-moss-400 dark:hover:border-moss-500 transition">
+            <IconBook width={16} height={16} className="mt-0.5 shrink-0 text-moss-700 dark:text-moss-400" />
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium text-forest-900 dark:text-slate-100 truncate">{f.title || f.file_name || f.attachment_id}</div>
+              {f.description && (<div className="mt-0.5 text-[12px] text-botanical-text2 dark:text-slate-400 line-clamp-3">{f.description}</div>)}
+            </div>
+          </a> */}
+      {(files || []).length > 0 && (
+        <section className="mt-6 first:mt-0">
+          <SectionHead
+            label="Files you attached"
+            count={files.length}
+            noun="file"
+            note="Read by the agent for context. Never placed in the email."
+          />
+          <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {files.map((f) => (
+              <div
+                key={f.attachment_id}
+                className="group flex flex-col rounded-xl border border-botanical-line dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden hover:border-moss-400 dark:hover:border-moss-500 transition"
+              >
+                <button
+                  type="button"
+                  onClick={() => setOpenFile(f)}
+                  title="View details"
+                  className="aspect-square flex flex-col items-center justify-center gap-2 bg-cream-100 dark:bg-slate-950"
+                >
+                  <span className="grid h-14 w-14 place-items-center rounded-xl bg-moss-100 dark:bg-moss-500/15 text-moss-700 dark:text-moss-400 group-hover:scale-[1.05] transition-transform">
+                    <IconDoc width={24} height={24} />
+                  </span>
+                  <span className="text-[11px] font-semibold tracking-wider text-botanical-text3 dark:text-slate-500">
+                    {fileKind(f)}
+                  </span>
+                </button>
+                <div className="border-t border-botanical-line dark:border-slate-800 px-2.5 py-2">
+                  <button
+                    type="button"
+                    onClick={() => setOpenFile(f)}
+                    className="block w-full text-left"
+                  >
+                    <div className="text-[12px] font-medium text-forest-900 dark:text-slate-100 line-clamp-2">
+                      {f.title || f.file_name || f.attachment_id}
+                    </div>
+                    {f.description && (
+                      <div className="mt-0.5 text-[11.5px] text-botanical-text2 dark:text-slate-400 line-clamp-3">
+                        {f.description}
+                      </div>
+                    )}
+                  </button>
+                  <div className="mt-1.5 flex items-center justify-between gap-2">
+                    <IdBadge id={f.attachment_id} />
+                    <MentionButton id={f.attachment_id} onMention={onMention} />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      {openFile && <FileModal file={openFile} onClose={closeFile} onMention={onMention} />}
+    </div>
+  );
+}
 
 function CanvasEmpty({ icon, title, body }) {
   return (

@@ -3,6 +3,24 @@ import { milestoneLabel } from '../lib/milestones.js';
 import { IconArrowRight, IconSparkle } from './icons.jsx';
 
 /**
+ * Whether a reopened thread still owes the user its gap questions. They are asked
+ * once, at the start, so the card stays down once the answers were submitted —
+ * skipped ones included, which is why the answers themselves cannot tell.
+ *
+ * Submitting saves a user message opening with `answersPhrase`, written by that
+ * agent's `/stream` endpoint ("Here are my gap answers" for Foundation and Email,
+ * "Here are my campaign answers" for Meta Ad) — keep the two in step. A summary
+ * means the conversation was compacted, long past the questions.
+ */
+export function gapStillOpen(thread, answersPhrase) {
+  return !(thread.messages || []).some(
+    (m) =>
+      m.role === 'summary' ||
+      (m.role === 'user' && (m.content || '').includes(answersPhrase)),
+  );
+}
+
+/**
  * Gap questions inline card. Rendered inside the chat stream as the first
  * assistant "message" after /init resolves. Answers array is positionally
  * aligned with the original gap_questions list.

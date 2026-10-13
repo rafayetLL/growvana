@@ -46,9 +46,13 @@
 //                     kind). `sequence` is a list of {step_number, email_html}
 //                     entries (or null on single kind).
 //
-//       `{{IMAGE_<NAME>}}` tokens in `email_html` are LITERAL and reference
-//       user-uploaded `email_assets`; the frontend resolves them at render
-//       time from its own upload state.
+//       `images`    — { homepage: [], attachment: [{image_url, image_title,
+//                     metadata_description}] } — the images THIS turn attached,
+//                     as the agent described them. Earlier turns' are not repeated.
+//       `files`     — [{attachment_id, file_url, file_name, mime_type, title,
+//                     description}] — the non-image files THIS turn attached.
+//
+//       Images are embedded in `email_html` by their URL; nothing to substitute.
 //   - { type: 'error', status, code, message }
 //       Structured error frame (Timeout Error / GrowvanaException class /
 //       Unknown Error). Includes the blueprint-missing message when the
@@ -117,28 +121,17 @@ export async function* streamEmailAgent({
   user_message,
   gap_answers,
   attachment_urls,
-  email_assets,
   webhook_request,
   signal,
 }) {
   const body = { email_request: { thread_id } };
   if (user_message !== undefined) body.email_request.user_message = user_message;
   if (gap_answers !== undefined) body.email_request.gap_answers = gap_answers;
-  // `attachment_urls` is a file the user attached for CONTEXT — a brief, a
-  // competitor mail, a screenshot. Sent only on the turn it was attached: the
-  // backend keeps it on the thread for the life of the session, so a later
-  // turn re-sending the same URL gets the same file back, not a second one.
-  // Distinct from `email_assets` below, which is imagery embedded IN the mail.
+  // `attachment_urls` — images and files sent THIS turn. An image joins the
+  // campaign's images and can go in the email (by this URL); any other file is
+  // context. The agent describes each on arrival; `done` returns those descriptions.
   if (attachment_urls && attachment_urls.length > 0) {
     body.email_request.attachment_urls = attachment_urls;
-  }
-  // `email_assets` carries ONLY assets uploaded THIS turn. The backend's
-  // `merge_email_assets` reducer accumulates them onto its persisted list,
-  // and `cmo_email_assets` is set from the same fresh list so the CMO sees
-  // image bytes only on the upload turn. Subsequent turns omit this field;
-  // backend state already has the prior bytes.
-  if (email_assets !== undefined && email_assets.length > 0) {
-    body.email_request.email_assets = email_assets;
   }
   if (webhook_request) body.webhook_request = webhook_request;
 

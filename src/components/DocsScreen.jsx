@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import Sidebar from './Sidebar.jsx';
 import Logo from './Logo.jsx';
 import MetaAdAgentDoc, { META_AD_DOC_META } from './docs/MetaAdAgentDoc.jsx';
+import EmailAgentDoc, { EMAIL_DOC_META } from './docs/EmailAgentDoc.jsx';
 import { downloadWordDoc } from './docs/wordExport.js';
 import {
   IconTarget,
@@ -34,10 +35,12 @@ const DOCS = [
   {
     id: 'email_agent',
     name: 'Email Marketing Agent',
-    blurb: 'Campaign briefs, copy, design and compliance for email sequences.',
+    blurb: 'The questions it asks once, how a plan becomes copy and design, and how changes are made.',
     icon: IconMail,
     tint: 'text-rose-500 dark:text-rose-400',
     tintBg: 'bg-rose-50 dark:bg-rose-500/10',
+    doc: EmailAgentDoc,
+    meta: EMAIL_DOC_META,
   },
   {
     id: 'pdp_agent',

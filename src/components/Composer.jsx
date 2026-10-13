@@ -1,16 +1,8 @@
-import React, { useState } from 'react';
-import { IconSend, IconAttach, IconX, IconLink, IconPlus, IconImage } from './icons.jsx';
+import React, { useEffect, useRef, useState } from 'react';
+import { IconSend, IconAttach, IconX, IconLink, IconPlus } from './icons.jsx';
 import { CHAT_FILE_EXTENSIONS, formatExtensions } from '../lib/fileTypes.js';
 
-// Backend's EmailAssetInput.name pattern: ^[A-Za-z0-9_-]{1,64}$
-const ASSET_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
-
-// User types "image hero 1" → store/send "IMAGE_HERO_1". Same normalized
-// form flows into placeholders, HTML, and the substitution lookup so the
-// rendered email and the stored asset.name agree byte-for-byte.
-function normalizeAssetName(raw) {
-  return raw.trim().toUpperCase().replace(/\s+/g, '_');
-}
+const DEFAULT_ATTACH_HINT = 'a file the AI reads for context (not added to the email)';
 
 function fileNameFromUrl(url) {
   try {
@@ -23,60 +15,55 @@ function fileNameFromUrl(url) {
 }
 
 /**
- * Composer with two optional asset trays:
- * - Chat attachments — always available; `onSend(text, urls)` carries them.
- *   Plain pre-signed URLs the backend downloads as multimodal context.
- * - Email image assets — gated by `emailAssets` + `onUpdateEmailAssets`.
- *   Each is { url, name, alt_text? } and becomes a {{<name>}} token in
- *   the rendered email (user-supplied name verbatim — no prefix added).
- *   The screen tracks them across turns; they
- *   ride along on every stream call. We do NOT send them via onSend —
- *   they live in screen state, not per-message state.
+ * Composer with a chat-attachment tray: `onSend(text, urls)` carries the URLs,
+ * which the backend downloads. `attachHint` says what an attachment does on the
+ * screen using it — the Email agent puts an attached image into the email.
+ *
+ * `insert` ({ text, key }, optional) lets the screen add text to the message —
+ * the Email screen's "Mention" on an image or file adds `[image-5]` / `[att-4]`.
+ * A new `key` each time, so the same mention can be added twice.
+ *
+ * `allowFilesOnly` lets a message go with attachments and no text (`onSend('',
+ * urls)`). Off by default: only the Email agent's `/stream` accepts a file-only turn.
  */
 export default function Composer({
   disabled,
   onSend,
   placeholder = 'Share your insights…',
-  emailAssets,
-  onUpdateEmailAssets,
+  attachHint = DEFAULT_ATTACH_HINT,
+  insert,
+  allowFilesOnly = false,
 }) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [showAttach, setShowAttach] = useState(false);
   const [draftUrl, setDraftUrl] = useState('');
-  // Asset-images popover state — only used when the parent opted in.
-  const [showAsset, setShowAsset] = useState(false);
-  const [assetName, setAssetName] = useState('');
-  const [assetUrl, setAssetUrl] = useState('');
-  const [assetAlt, setAssetAlt] = useState('');
-  const [assetError, setAssetError] = useState('');
-  // Names added in the current turn — chip tray shows only these so prior
-  // turns' assets don't linger in the composer UI. Full session list lives
-  // in parent state for image substitution in the design canvas.
-  const [freshAssetNames, setFreshAssetNames] = useState([]);
+  const textareaRef = useRef(null);
 
-  const assetsEnabled = Array.isArray(emailAssets) && typeof onUpdateEmailAssets === 'function';
-  const freshAssets = assetsEnabled
-    ? emailAssets.filter((a) => freshAssetNames.includes(a.name))
-    : [];
+  useEffect(() => {
+    if (!insert?.text) return;
+    setValue((prev) => `${prev && !/\s$/.test(prev) ? `${prev} ` : prev}${insert.text} `);
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    // After React writes the new value: grow the box to fit and put the caret at the end.
+    requestAnimationFrame(() => {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }, [insert?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const canSend = !!value.trim() || (allowFilesOnly && attachments.length > 0);
 
   function submit() {
     const v = value.trim();
-    if (!v || disabled) return;
-    // Pass freshAssets (only assets added in THIS turn) to the parent so
-    // it can ship them in the request body as "fresh-this-turn". Prior
-    // turns' assets stay in the parent's full emailAssets list — needed
-    // for design-canvas placeholder substitution — but they are NOT re-sent.
-    onSend(
-      v,
-      attachments.length > 0 ? attachments.slice() : undefined,
-      freshAssets.length > 0 ? freshAssets.slice() : undefined,
-    );
+    if (!canSend || disabled) return;
+    onSend(v, attachments.length > 0 ? attachments.slice() : undefined);
     setValue('');
     setAttachments([]);
     setShowAttach(false);
     setDraftUrl('');
-    setFreshAssetNames([]);
   }
 
   function addDraftUrl() {
@@ -92,46 +79,6 @@ export default function Composer({
 
   function removeAttachment(url) {
     setAttachments((prev) => prev.filter((u) => u !== url));
-  }
-
-  function isLikelyUrl(s) {
-    try {
-      const u = new URL(s);
-      return u.protocol === 'http:' || u.protocol === 'https:';
-    } catch {
-      return false;
-    }
-  }
-
-  function addEmailAsset() {
-    if (!assetsEnabled) return;
-    const rawName = assetName.trim();
-    const url = assetUrl.trim();
-    const alt = assetAlt.trim();
-    if (!rawName || !url) {
-      setAssetError('Name and URL are both required.');
-      return;
-    }
-    const name = normalizeAssetName(rawName);
-    if (!ASSET_NAME_RE.test(name)) {
-      setAssetError('Use letters, numbers, spaces, underscores or dashes (1–64 chars).');
-      return;
-    }
-    if (!isLikelyUrl(url)) {
-      setAssetError('URL must start with http:// or https://.');
-      return;
-    }
-    if (emailAssets.some((a) => a.name === name)) {
-      setAssetError(`An image named "${name}" already exists in this session.`);
-      return;
-    }
-    onUpdateEmailAssets([...emailAssets, { name, url, alt_text: alt || undefined }]);
-    setFreshAssetNames((prev) => [...prev, name]);
-    setAssetName('');
-    setAssetUrl('');
-    setAssetAlt('');
-    setAssetError('');
-    setShowAsset(false);
   }
 
   return (
@@ -165,97 +112,6 @@ export default function Composer({
           </div>
         )}
 
-        {assetsEnabled && freshAssets.length > 0 && (
-          <div className="mb-2">
-            <div className="text-[11px] uppercase tracking-wider font-semibold text-ink-400 dark:text-slate-500 mb-1">
-              Asset images
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {freshAssets.map((a) => (
-                <span
-                  key={a.name}
-                  className="inline-flex items-center gap-1.5 px-2 py-1 text-[12px] rounded-md bg-moss-100 dark:bg-moss-500/15 border border-moss-300 dark:border-moss-500/40 text-moss-700 dark:text-moss-300 max-w-[280px]"
-                  title={`{{${a.name}}} → ${a.url}${a.alt_text ? `\nalt: ${a.alt_text}` : ''}`}
-                >
-                  <IconImage width={12} height={12} className="text-moss-600 dark:text-moss-400 shrink-0" />
-                  <span className="truncate font-mono">{a.name}</span>
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {assetsEnabled && showAsset && (
-          <div className="mb-2 bg-white dark:bg-slate-800/60 border border-ink-200 dark:border-slate-700 rounded-lg px-3 py-2.5 flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <IconImage width={14} height={14} className="text-moss-600 dark:text-moss-400 shrink-0" />
-              <span className="text-[11.5px] tracking-wider uppercase font-semibold text-ink-500 dark:text-slate-400">
-                Add asset image
-              </span>
-              <span className="text-[11px] text-ink-400 dark:text-slate-500 font-normal">
-                — an image that will appear inside the final email
-              </span>
-            </div>
-            <div className="grid grid-cols-[180px_1fr] gap-1.5">
-              <input
-                type="text"
-                autoFocus
-                value={assetName}
-                onChange={(e) => setAssetName(e.target.value)}
-                placeholder="hero image 1"
-                className="bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-600 rounded-md px-2 py-1.5 text-[12.5px] text-ink-900 dark:text-slate-100 placeholder:text-ink-400 dark:placeholder:text-slate-500 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 dark:focus:ring-brand-500/20"
-              />
-              <input
-                type="url"
-                value={assetUrl}
-                onChange={(e) => setAssetUrl(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    addEmailAsset();
-                  } else if (e.key === 'Escape') {
-                    setShowAsset(false);
-                    setAssetError('');
-                  }
-                }}
-                placeholder="https://… image URL"
-                className="bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-600 rounded-md px-2 py-1.5 text-[12.5px] text-ink-900 dark:text-slate-100 placeholder:text-ink-400 dark:placeholder:text-slate-500 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 dark:focus:ring-brand-500/20"
-              />
-            </div>
-            <input
-              type="text"
-              value={assetAlt}
-              onChange={(e) => setAssetAlt(e.target.value)}
-              placeholder="Alt text (optional)"
-              className="bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-600 rounded-md px-2 py-1.5 text-[12px] text-ink-700 dark:text-slate-200 placeholder:text-ink-400 dark:placeholder:text-slate-500 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 dark:focus:ring-brand-500/20"
-            />
-            {assetError && (
-              <div className="text-[11.5px] text-red-600 dark:text-red-300">{assetError}</div>
-            )}
-            <div className="flex items-center justify-between text-[11px] text-ink-400 dark:text-slate-500">
-              <span>
-                Stored as <code className="font-mono">{`{{${normalizeAssetName(assetName) || 'NAME'}}}`}</code> in the email HTML.
-              </span>
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => { setShowAsset(false); setAssetError(''); }}
-                  className="text-[12px] px-2 py-1 rounded-md text-ink-500 dark:text-slate-400 hover:bg-ink-50 dark:hover:bg-slate-800"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={addEmailAsset}
-                  className="text-[12px] px-2.5 py-1 rounded-md bg-moss-600 text-white hover:bg-moss-700 transition inline-flex items-center gap-1"
-                >
-                  <IconPlus width={12} height={12} /> Add
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {showAttach && (
           <div className="mb-2 bg-white dark:bg-slate-800/60 border border-ink-200 dark:border-slate-700 rounded-lg px-3 py-2 flex flex-col gap-1.5">
             <div className="flex items-center gap-2">
@@ -264,7 +120,7 @@ export default function Composer({
                 Add chat attachment
               </span>
               <span className="text-[11px] text-ink-400 dark:text-slate-500 font-normal">
-                — a file the AI reads for context (not added to the email)
+                — {attachHint}
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -299,6 +155,7 @@ export default function Composer({
 
         <div className="flex items-end gap-2 bg-white dark:bg-slate-800/60 border border-ink-200 dark:border-slate-700 rounded-xl px-3 py-2 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100 dark:focus-within:ring-brand-500/20 transition">
           <textarea
+            ref={textareaRef}
             rows={1}
             value={value}
             disabled={disabled}
@@ -327,33 +184,15 @@ export default function Composer({
             }
             aria-label="Add chat attachment"
             aria-pressed={showAttach}
-            title="Chat attachment — a file for the AI to read (not added to the email)"
+            title={`Chat attachment — ${attachHint}`}
           >
             <IconAttach width={14} height={14} />
             Chat attachment
           </button>
-          {assetsEnabled && (
-            <button
-              type="button"
-              onClick={() => { setShowAsset((s) => !s); setAssetError(''); }}
-              className={
-                (showAsset
-                  ? 'bg-moss-100 dark:bg-moss-500/15 text-moss-700 dark:text-moss-300 border-moss-300 dark:border-moss-500/40 '
-                  : 'text-ink-600 dark:text-slate-300 border-ink-200 dark:border-slate-700 hover:bg-ink-50 dark:hover:bg-slate-800 hover:text-ink-800 dark:hover:text-slate-100 ') +
-                'h-8 px-2.5 rounded-md border inline-flex items-center gap-1.5 text-[12px] font-medium transition'
-              }
-              aria-label="Add asset image"
-              aria-pressed={showAsset}
-              title="Asset image — an image that will appear inside the final email"
-            >
-              <IconImage width={14} height={14} />
-              Email asset
-            </button>
-          )}
           <button
             type="button"
             onClick={submit}
-            disabled={disabled || !value.trim()}
+            disabled={disabled || !canSend}
             aria-label="Send"
             className="h-8 w-8 grid place-items-center rounded-lg bg-brand-500 text-white hover:bg-brand-600 disabled:bg-ink-200 dark:disabled:bg-slate-700 disabled:text-ink-400 dark:disabled:text-slate-500 transition"
           >

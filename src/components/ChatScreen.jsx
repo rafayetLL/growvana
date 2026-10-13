@@ -3,7 +3,7 @@ import Sidebar from './Sidebar.jsx';
 import MilestonesPanel from './MilestonesPanel.jsx';
 import MilestoneViewer from './MilestoneViewer.jsx';
 import Composer from './Composer.jsx';
-import GapQuestions from './GapQuestions.jsx';
+import GapQuestions, { gapStillOpen } from './GapQuestions.jsx';
 import { ChatMessageItem, DraftingActivityCard } from './MessageRenderers.jsx';
 import { streamChat } from '../lib/api.js';
 import { subscribeProgress, buildWebhookRequest } from '../lib/webhookBus.js';
@@ -96,7 +96,9 @@ export default function ChatScreen({ initResult, activeView = 'foundations', onS
     setMessages(
       (t.messages || []).map((m) => ({ role: m.role, content: m.content, time: null })),
     );
-    setGapQuestions((t.questions || []).filter((q) => !(q.answers || []).length));
+    // The card is shown once, at the start of the thread, and never again once
+    // submitted — the whole list, so answers stay aligned with their questions.
+    setGapQuestions(gapStillOpen(t, 'Here are my gap answers') ? t.questions || [] : []);
     setMilestoneMarkdown(t.draft_deliverables || {});
     setPendingApproval(new Set(t.pending_approval || []));
     // Every milestone with an accepted version HAS been accepted at some point,
