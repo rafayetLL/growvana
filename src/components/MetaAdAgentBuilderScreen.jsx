@@ -487,7 +487,7 @@ export default function MetaAdAgentBuilderScreen({
     path === 'tune_existing_ads' && busy && latestDiagnoses.length === 0;
   const showComposer =
     path !== 'tune_existing_ads' || confirmedAdIds.length > 0 || latestDiagnoses.length > 0;
-  const composerDisabled = busy || gapQuestions.length > 0;
+  const composerDisabled = busy;
 
   // Stepper state derived from which artifacts exist + what's drafting now.
   const doneMap = {

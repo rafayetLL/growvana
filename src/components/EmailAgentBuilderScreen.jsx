@@ -40,12 +40,15 @@ const TABS = [
 // homepage ones; each turn's `done` gives the images THAT turn attached, which are
 // appended. `image_id` (`image-5`) is what the agent calls it, like a file's
 // `attachment_id` (`att-4`); "Mention" puts `[image-5]` / `[att-4]` in the message.
-const NO_IMAGES = { homepage: [], attachment: [] };
+// `generated` holds the images the designer rendered for this campaign; it arrives on
+// `/init`, `GET` and `done` like the others.
+const NO_IMAGES = { homepage: [], attachment: [], generated: [] };
 
 function asImages(images) {
   return {
     homepage: images?.homepage || [],
     attachment: images?.attachment || [],
+    generated: images?.generated || [],
   };
 }
 
@@ -664,6 +667,7 @@ export default function EmailAgentBuilderScreen({
             setCampaignImages((prev) => ({
               homepage: mergeByKey(prev.homepage, added.homepage, 'image_url'),
               attachment: mergeByKey(prev.attachment, added.attachment, 'image_url'),
+              generated: mergeByKey(prev.generated, added.generated, 'image_url'),
             }));
           }
           if (evt.files?.length) {
@@ -829,7 +833,7 @@ export default function EmailAgentBuilderScreen({
             )}
 
             <Composer
-              disabled={busy || gapQuestions.length > 0 || initLoading || !!initError}
+              disabled={busy || initLoading || !!initError}
               onSend={handleSendText}
               placeholder="Tell the email agent what to build…"
               attachHint="an image can be used in the email; any other file, like a brief, is read for context"
@@ -854,7 +858,11 @@ export default function EmailAgentBuilderScreen({
               hasContent={!!(latestContent?.single || latestContent?.sequence)}
               hasHtml={hasAnyHtml(latestHtml?.kind, latestHtml?.single, latestHtml?.sequence)}
               hasImages={
-                campaignImages.homepage.length + campaignImages.attachment.length + campaignFiles.length > 0
+                campaignImages.homepage.length +
+                  campaignImages.attachment.length +
+                  campaignImages.generated.length +
+                  campaignFiles.length >
+                0
               }
             />
 
@@ -1865,6 +1873,11 @@ const IMAGE_SECTIONS = [
     key: 'attachment',
     label: 'Images you attached',
     note: 'Sent in the chat and described by the agent. It can use them in the email.',
+  },
+  {
+    key: 'generated',
+    label: 'Generated images',
+    note: 'Rendered by the designer for this campaign. Stored with your other images; the email can use them like any other.',
   },
   {
     key: 'homepage',

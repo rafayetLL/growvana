@@ -509,7 +509,7 @@ export default function ChatScreen({ initResult, activeView = 'foundations', onS
           </div>
         )}
 
-        <Composer disabled={busy || gapQuestions.length > 0} onSend={handleSendText} />
+        <Composer disabled={busy} onSend={handleSendText} />
 
         {activeMilestone && (
           <MilestoneViewer

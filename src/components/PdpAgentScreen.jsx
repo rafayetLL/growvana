@@ -1587,18 +1587,12 @@ export default function PdpAgentScreen({
                   </div>
                 )}
 
-                {/* The questions are answered THROUGH the card, not typed — its
-                    submit button is what sends the turn, and a founder who wants
-                    to skip them submits it blank. Same lock the Meta Ad screen
-                    holds while its own gap card is open. */}
+                {/* The gap card stays open above while a message is sent; its
+                    answers can still be submitted later. */}
                 <Composer
-                  disabled={busy || gapQuestions.length > 0}
+                  disabled={busy}
                   onSend={handleSendText}
-                  placeholder={
-                    gapQuestions.length > 0
-                      ? 'Answer or skip the questions above to carry on…'
-                      : 'Ask for the audit, or ask what to fix first…'
-                  }
+                  placeholder="Ask for the audit, or ask what to fix first…"
                 />
               </div>
             )}
