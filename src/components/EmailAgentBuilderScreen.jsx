@@ -41,14 +41,16 @@ const TABS = [
 // appended. `image_id` (`image-5`) is what the agent calls it, like a file's
 // `attachment_id` (`att-4`); "Mention" puts `[image-5]` / `[att-4]` in the message.
 // `generated` holds the images the designer rendered for this campaign; it arrives on
-// `/init`, `GET` and `done` like the others.
-const NO_IMAGES = { homepage: [], attachment: [], generated: [] };
+// `/init`, `GET` and `done` like the others. `webpage` holds the images taken from a
+// webpage the user shared in the chat, each with the `page_url` it came from.
+const NO_IMAGES = { homepage: [], attachment: [], generated: [], webpage: [] };
 
 function asImages(images) {
   return {
     homepage: images?.homepage || [],
     attachment: images?.attachment || [],
     generated: images?.generated || [],
+    webpage: images?.webpage || [],
   };
 }
 
@@ -668,6 +670,7 @@ export default function EmailAgentBuilderScreen({
               homepage: mergeByKey(prev.homepage, added.homepage, 'image_url'),
               attachment: mergeByKey(prev.attachment, added.attachment, 'image_url'),
               generated: mergeByKey(prev.generated, added.generated, 'image_url'),
+              webpage: mergeByKey(prev.webpage, added.webpage, 'image_url'),
             }));
           }
           if (evt.files?.length) {
@@ -861,6 +864,7 @@ export default function EmailAgentBuilderScreen({
                 campaignImages.homepage.length +
                   campaignImages.attachment.length +
                   campaignImages.generated.length +
+                  campaignImages.webpage.length +
                   campaignFiles.length >
                 0
               }
@@ -1875,6 +1879,11 @@ const IMAGE_SECTIONS = [
     note: 'Sent in the chat and described by the agent. It can use them in the email.',
   },
   {
+    key: 'webpage',
+    label: 'Images from webpages you shared',
+    note: 'Taken from a webpage you linked in the chat and described by the agent. It can use them in the email.',
+  },
+  {
     key: 'generated',
     label: 'Generated images',
     note: 'Rendered by the designer for this campaign. Stored with your other images; the email can use them like any other.',
@@ -2010,6 +2019,16 @@ function ImageModal({ image, onClose, onMention }) {
             >
               <IconLink width={14} height={14} /> Open original
             </a>
+            {image.page_url && (
+              <a
+                href={image.page_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-moss-700 dark:text-moss-400 hover:underline"
+              >
+                <IconLink width={14} height={14} /> Open webpage
+              </a>
+            )}
           </div>
         </div>
       </div>
@@ -2111,7 +2130,7 @@ function ImagesCanvas({ images, files, onMention }) {
       <CanvasEmpty
         icon={<IconImage width={20} height={20} />}
         title="No images yet"
-        body="Images from your homepage appear here once the campaign is opened from a Foundation, and so does anything you attach in the chat."
+        body="Images from your homepage appear here once the campaign is opened from a Foundation, and so does anything you attach in the chat or take from a webpage you link."
       />
     );
   }
