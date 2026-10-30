@@ -19,10 +19,15 @@
 //       errors   only when a model call failed for that company
 //
 //   POST /api/v1/asin-health/weekly   { account_ids? }   like the daily
-//     The raw data's last 14 days: this week against last. Per ASIN only, like the daily.
-//     → { date, accounts: [{ account_id, act_on: [{ asin, reasons, note }], errors? }] }
-//       act_on: every ASIN with a reason to act on it this week, in listing order;
-//       reasons are code's, note the model's (null when its call failed).
+//     The raw data's last 14 days (this week against last) and our stored dailies of the
+//     week (the data API's /dailies). Per ASIN only, like the daily.
+//     → { date, accounts: [{ account_id, asins: [{ asin, severity, daily_check_trend,
+//         reasons, days: [{ date, severity }], summary }], errors? }] }
+//       asins: every ASIN the daily alerted on this week or over a weekly threshold, the
+//       most severe first; quiet ones are left out. severity, reasons and days (7, each
+//       the day's worst alert or null) are code's; daily_check_trend (improving |
+//       worsening | steady) and summary the model's (null when its call failed).
+//     Until 2026-10-30: { account_id, act_on: [{ asin, reasons, note }] }.
 //
 //   Until 2026-10-30 the weekly was sent our 7 daily answers instead
 //   (`{ daily_results: [...] }`) and answered `{ account_id, message, asins: [{ asin,

@@ -101,7 +101,7 @@ export default function AsinHealthChat({ companies, selected }) {
   const abort = useRef(null);
   const scroller = useRef(null);
 
-  // Follow the screen's company; with "All companies" keep the chat's own pick.
+  // Follow the screen's company.
   useEffect(() => {
     if (selected) setAccountId(selected);
   }, [selected]);

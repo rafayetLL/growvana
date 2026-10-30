@@ -1785,7 +1785,7 @@ export default function AsinHealthScreen({
   const [data, setData] = useState(null); // the raw dummy data, every company
   // The mock daily answers the weekly was sent until 2026-10-30:
   // const [dailies, setDailies] = useState(null);
-  const [selected, setSelected] = useState(null); // null = every company
+  const [selected, setSelected] = useState(null); // the company shown; the first once the data loads
   const [results, setResults] = useState(() => ({ daily: readStored('daily'), weekly: readStored('weekly') }));
   const [running, setRunning] = useState(null);
   const [elapsed, setElapsed] = useState(0);
@@ -1822,6 +1822,10 @@ export default function AsinHealthScreen({
   const companies = Object.values(lookup.accounts);
 
   useEffect(() => {
+    if (!selected && companies.length) setSelected(companies[0].account_id);
+  }, [selected, companies]);
+
+  useEffect(() => {
     if (!running) return undefined;
     const started = Date.now();
     setElapsed(0);
@@ -1849,7 +1853,7 @@ export default function AsinHealthScreen({
     }
   }
 
-  const pick = (list) => (selected ? (list || []).filter((a) => a.account_id === selected) : list || []);
+  const pick = (list) => (list || []).filter((a) => a.account_id === selected);
   const shownResult = results[tabRun];
 
   function noRun(run) {
@@ -1869,7 +1873,7 @@ export default function AsinHealthScreen({
   if (tab === 'data') {
     body = data ? (
       <DataView
-        data={{ ...data, accounts: data.accounts.filter((c) => !selected || c.account.account_id === selected) }}
+        data={{ ...data, accounts: data.accounts.filter((c) => c.account.account_id === selected) }}
         result={results.daily}
       />
     ) : (
@@ -1997,9 +2001,6 @@ export default function AsinHealthScreen({
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-[1280px] mx-auto px-6 py-5">
             <div className="flex flex-wrap items-center gap-2">
-              <CompanyPill active={selected === null} onClick={() => setSelected(null)}>
-                All companies
-              </CompanyPill>
               {companies.map((a) => (
                 <CompanyPill key={a.account_id} active={selected === a.account_id} onClick={() => setSelected(a.account_id)}>
                   {a.name} <span className="text-ink-400 dark:text-slate-500">{a.asin_count}</span>
