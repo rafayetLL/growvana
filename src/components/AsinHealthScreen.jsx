@@ -34,16 +34,17 @@ const Lookup = createContext({ accounts: {}, names: {} });
 const TABS = [
   { id: 'digest', label: 'Daily digest' },
   { id: 'weekly', label: 'Weekly' },
-  { id: 'content', label: 'Content fixes' },
+  { id: 'content', label: 'CDQ score' }, // 'Content fixes' until 2026-10-30 (the spec's name)
   { id: 'data', label: 'ASIN data' },
 ];
 
 const RUN_LABELS = { daily: 'Run daily check', weekly: 'Run weekly' };
 
 // A version moves when a run's shape changes, so a result saved in the old shape is
-// left behind rather than read: daily `v4` is one alert per ASIN and weekly `v6` the
-// ASINs to act on from the raw data (2026-10-30).
-const STORAGE_VERSION = { daily: 'v4', weekly: 'v6' };
+// left behind rather than read: daily `v5` is one alert per ASIN with each rule's spec
+// name (`v4` had no names) and weekly `v7` the week's ASINs with their days and summary
+// (`v6` was `act_on`) — both 2026-10-30.
+const STORAGE_VERSION = { daily: 'v5', weekly: 'v7' };
 const STORAGE_KEY = (run) => `growvana.asinHealth.lastRun.${STORAGE_VERSION[run]}.${run}`;
 
 function readStored(run) {
@@ -191,7 +192,9 @@ const CAUSE_TEXT = { supply: 'supply-driven', demand: 'demand-driven', unknown: 
 
 const SEVERITY_RANK = { high: 0, medium: 1 };
 
-// The five content dimensions, short enough for a bar label.
+// The five content dimensions, short enough for a bar label — until 2026-10-30, when the
+// screen began showing the spec's names as the backend sends them (the user's call). Only
+// commented code still reads it.
 const DIMENSION_SHORT = {
   'Structured Attributes': 'Attributes',
   'Title Quality': 'Title',
@@ -203,14 +206,15 @@ const DIMENSION_SHORT = {
 // The share of the 100 points code scores alone; the model judges the rest.
 const CODE_POINTS = 56.5;
 
-// The answers carry the rule id only.
+// The rule names, until each rule on the answer carried its spec name (`rules[].name`,
+// 2026-10-30): the names come from the backend now. Only commented code still reads this.
 const RULE_NAMES = {
   A1: 'Buy box lost with PO decline',
   A2: 'Buy box lost',
   A4: 'Prime eligibility lost',
   A5: 'Listing suppressed or issue raised',
   A6: 'Price mismatch',
-  A7: 'Revenue drop',
+  A7: 'Revenue drop — demand vs supply',
   A8: 'Amazon stock-out risk',
   A9: 'Content regression',
   A10: 'Content gap on a priority ASIN',
@@ -567,7 +571,7 @@ function AlertCard({ alert }) {
       <div className="flex flex-wrap items-center gap-2">
         <SeverityChip severity={severity} />
         {alert.rules.map((r) => (
-          <RulePill key={r.rule_id} id={r.rule_id} name={RULE_NAMES[r.rule_id]} />
+          <RulePill key={r.rule_id} id={r.rule_id} name={r.name} />
         ))}
       </div>
       <div className="mt-2 flex flex-wrap items-baseline gap-x-2">
@@ -634,6 +638,110 @@ function DailyDigest({ account }) {
 
 // ── tab 2: weekly ───────────────────────────────────────────────────────────────
 
+// The weekly since 2026-10-30: every ASIN the daily alerted on this week or over a weekly
+// threshold — its severity, the model's daily-check trend, the 7-day strip, the model's
+// summary and code's reasons. Quiet ASINs are not in the answer.
+const TREND_STYLE = {
+  improving: { mark: '▲', text: 'Improving', cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' },
+  worsening: { mark: '▼', text: 'Worsening', cls: 'bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300' },
+  steady: { mark: '▬', text: 'Steady', cls: 'bg-ink-100 text-ink-600 dark:bg-slate-800 dark:text-slate-300' },
+};
+
+const DAY_SQUARE = {
+  high: 'bg-rose-500 dark:bg-rose-500',
+  medium: 'bg-amber-400 dark:bg-amber-400',
+  quiet: 'bg-ink-100 dark:bg-slate-800',
+};
+
+function TrendBadge({ trend }) {
+  const t = TREND_STYLE[trend];
+  if (!t) return null;
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[12px] font-semibold ${t.cls}`}>
+      <span className="text-ink-500 dark:text-slate-400 font-medium">Daily check trend</span>
+      {t.mark} {t.text}
+    </span>
+  );
+}
+
+function WeekStrip7({ days }) {
+  return (
+    <div className="flex gap-1.5">
+      {days.map((d) => (
+        <div key={d.date} className="flex flex-col items-center gap-1">
+          <span
+            title={`${dayLabel(d.date, false)} · ${d.severity || 'no alert'}`}
+            className={`h-6 w-6 rounded-md ${DAY_SQUARE[d.severity || 'quiet']}`}
+          />
+          <span className="text-[10.5px] text-ink-400 dark:text-slate-500">
+            {new Date(`${d.date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'narrow' })}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function WeeklyAsinCard({ item }) {
+  const { names } = useContext(Lookup);
+  const high = item.severity === 'high';
+  return (
+    <article
+      className={`rounded-xl border border-ink-200 dark:border-slate-800 border-l-4 bg-white dark:bg-slate-900 px-4 py-3 ${
+        high ? 'border-l-rose-500 dark:border-l-rose-500' : 'border-l-amber-500 dark:border-l-amber-500'
+      }`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <SeverityChip severity={item.severity} />
+        <span className="font-mono text-[12px] text-ink-500 dark:text-slate-400">{item.asin}</span>
+        <span className="text-[13.5px] font-medium text-ink-900 dark:text-slate-100">{names[item.asin]}</span>
+        <span className="ml-auto">
+          <TrendBadge trend={item.daily_check_trend} />
+        </span>
+      </div>
+      <div className="mt-3">
+        <WeekStrip7 days={item.days} />
+      </div>
+      {item.summary && (
+        <p className="mt-2.5 text-[13.5px] leading-relaxed text-ink-800 dark:text-slate-200">{item.summary}</p>
+      )}
+      <ul className="mt-2.5 flex flex-wrap gap-1.5">
+        {item.reasons.map((r) => (
+          <li
+            key={r}
+            className="rounded-md bg-ink-100 dark:bg-slate-800 px-2 py-0.5 text-[12px] text-ink-600 dark:text-slate-300"
+          >
+            {r}
+          </li>
+        ))}
+      </ul>
+    </article>
+  );
+}
+
+function WeeklyWeek({ account }) {
+  const { accounts } = useContext(Lookup);
+  const asins = account.asins || [];
+  return (
+    <CompanyCard>
+      <AccountHeader
+        accountId={account.account_id}
+        meta={`${num(asins.length)} of ${num(accounts[account.account_id]?.asin_count)} ASINs this week`}
+      />
+      <ErrorsBand errors={account.errors} />
+      <Section title="This week, by ASIN" count={asins.length}>
+        {asins.length === 0 ? (
+          <Empty>A quiet week — no alert and nothing over a weekly threshold.</Empty>
+        ) : (
+          asins.map((a) => <WeeklyAsinCard key={a.asin} item={a} />)
+        )}
+      </Section>
+    </CompanyCard>
+  );
+}
+
+/* The weekly's ASINs to act on, until 2026-10-30 (`act_on [{asin, reasons, note}]`):
+
 // One ASIN to act on: every reason code picked it, and the model's note.
 function ActOnRow({ item }) {
   const { names } = useContext(Lookup);
@@ -681,6 +789,7 @@ function WeeklyActOn({ account }) {
     </CompanyCard>
   );
 }
+*/
 
 /* The weekly review on our 7 daily answers (2026-10-29, until 2026-10-30): the screen
    sent its mock dailies to /weekly and drew a day strip per ASIN from them. Restore with
@@ -1222,8 +1331,9 @@ function DimensionBars({ dimensions }) {
         const share = isNone(d.points) || !d.weight ? null : d.points / d.weight;
         return (
           <div key={d.dimension} className="min-w-0" title={`${d.dimension}: ${points(d.points)} of ${points(d.weight)}`}>
-            <div className="text-[10.5px] text-ink-500 dark:text-slate-400 truncate">
-              {DIMENSION_SHORT[d.dimension] || d.dimension}
+            {/* The spec's dimension name in full (was DIMENSION_SHORT's, until 2026-10-30), wrapped. */}
+            <div className="text-[10.5px] leading-tight text-ink-500 dark:text-slate-400 min-h-[2.4em]">
+              {d.dimension}
             </div>
             <div className="mt-1 h-1.5 rounded-full bg-ink-100 dark:bg-slate-800 overflow-hidden">
               <div
@@ -1308,7 +1418,7 @@ function ContentCard({ item, ruleIds }) {
       >
         <div
           className={`h-12 w-12 shrink-0 rounded-full border-2 grid place-items-center text-[15px] font-semibold tabular-nums ${scoreRing(score)}`}
-          title={isNone(score) ? 'Not fully scored — a judged check is missing' : 'Content score out of 100'}
+          title={isNone(score) ? 'Not fully scored — a judged check is missing' : 'Content Quality (CDQ) Score, out of 100'}
         >
           {isNone(score) ? NONE : Math.round(score)}
         </div>
@@ -1443,7 +1553,7 @@ function findingsByAsin(result) {
     const entry = (asin) => (byAsin[asin] ||= { rules: [], score: null });
     for (const a of account.alerts || []) {
       for (const r of a.rules || []) {
-        entry(a.asin).rules.push({ rule_id: r.rule_id, name: RULE_NAMES[r.rule_id], severity: r.severity });
+        entry(a.asin).rules.push({ rule_id: r.rule_id, name: r.name, severity: r.severity });
       }
     }
     // The old weekly check-in's rules: for (const a of account.act_on || []) entry(a.asin).rules.push(...a.rules);
@@ -1562,8 +1672,8 @@ function DataView({ data, result }) {
         <span>
           The raw data the run reads (the dummy data API), on each ASIN's latest day.
           {result
-            ? ` Run alerts and content scores are from the last daily run${result.ran_at ? ` (${new Date(result.ran_at).toLocaleString()})` : ''}.`
-            : ' Run the daily check to see each ASIN’s alerts and content score here.'}
+            ? ` Run alerts and CDQ scores are from the last daily run${result.ran_at ? ` (${new Date(result.ran_at).toLocaleString()})` : ''}.`
+            : ' Run the daily check to see each ASIN’s alerts and CDQ score here.'}
         </span>
         <label className="ml-auto inline-flex items-center gap-1.5 cursor-pointer">
           <input type="checkbox" checked={onlyFlagged} onChange={(e) => setOnlyFlagged(e.target.checked)} />
@@ -1842,10 +1952,16 @@ export default function AsinHealthScreen({
     setRunning(which);
     setError(null);
     try {
-      const body = await runAsinHealth(which, ctrl.signal);
-      const stored = { ...body, ran_at: new Date().toISOString() };
-      setResults((r) => ({ ...r, [which]: stored }));
-      writeStored(which, stored);
+      // Only the company shown is run; its answer replaces that company's earlier one and
+      // the other companies' answers are kept.
+      const body = await runAsinHealth(which, selected ? [selected] : [], ctrl.signal);
+      const ran = new Set(body.accounts.map((a) => a.account_id));
+      setResults((r) => {
+        const kept = (r[which]?.accounts || []).filter((a) => !ran.has(a.account_id));
+        const stored = { ...body, accounts: [...kept, ...body.accounts], ran_at: new Date().toISOString() };
+        writeStored(which, stored);
+        return { ...r, [which]: stored };
+      });
     } catch (e) {
       if (e.name !== 'AbortError') setError(e.message);
     } finally {
@@ -1854,13 +1970,16 @@ export default function AsinHealthScreen({
   }
 
   const pick = (list) => (list || []).filter((a) => a.account_id === selected);
+  // A run is per company, so a company not run yet shows the "no run" note.
+  const ranDaily = pick(results.daily?.accounts).length > 0;
+  const ranWeekly = pick(results.weekly?.accounts).length > 0;
   const shownResult = results[tabRun];
 
   function noRun(run) {
     return (
       <Empty>
-        No {run} run yet. Press <span className="font-medium">{RUN_LABELS[run]}</span> to check every company — it takes a
-        minute or two. Meanwhile,{' '}
+        No {run} run for this company yet. Press <span className="font-medium">{RUN_LABELS[run]}</span> to check it — it
+        takes a minute or two. Meanwhile,{' '}
         <button type="button" className="underline" onClick={() => setTab('data')}>
           ASIN data
         </button>{' '}
@@ -1880,7 +1999,7 @@ export default function AsinHealthScreen({
       <Empty>Loading the data…</Empty>
     );
   } else if (tab === 'digest') {
-    body = results.daily ? (
+    body = ranDaily ? (
       <div className="space-y-6">
         {pick(results.daily.accounts).map((a) => (
           <DailyDigest key={a.account_id} account={a} />
@@ -1890,10 +2009,10 @@ export default function AsinHealthScreen({
       noRun('daily')
     );
   } else if (tab === 'weekly') {
-    body = results.weekly ? (
+    body = ranWeekly ? (
       <div className="space-y-6">
         {pick(results.weekly.accounts).map((a) => (
-          <WeeklyActOn key={a.account_id} account={a} />
+          <WeeklyWeek key={a.account_id} account={a} />
         ))}
       </div>
     ) : (
@@ -1912,7 +2031,7 @@ export default function AsinHealthScreen({
     //   <Empty>Loading the daily checks the review was sent…</Empty>
     // );
   } else {
-    body = results.daily ? (
+    body = ranDaily ? (
       <div className="space-y-6">
         {pick(results.daily.accounts).map((a) => (
           <ContentCompany key={a.account_id} account={a} />
@@ -1920,7 +2039,8 @@ export default function AsinHealthScreen({
       </div>
     ) : (
       <Empty>
-        No run yet. Press <span className="font-medium">{RUN_LABELS.daily}</span> to score every listing's content.
+        No run for this company yet. Press <span className="font-medium">{RUN_LABELS.daily}</span> to score its
+        listings' content.
       </Empty>
     );
   }
@@ -2022,7 +2142,7 @@ export default function AsinHealthScreen({
             <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-ink-500 dark:text-slate-400">
               {shownResult?.date && (
                 <span>
-                  {tab === 'content' ? 'Content scores from the daily run for' : `${tabRun === 'daily' ? 'Daily' : 'Weekly'} run for`}{' '}
+                  {tab === 'content' ? 'CDQ scores from the daily run for' : `${tabRun === 'daily' ? 'Daily' : 'Weekly'} run for`}{' '}
                   {dayLabel(shownResult.date)}
                 </span>
               )}

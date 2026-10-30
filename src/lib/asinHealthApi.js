@@ -6,7 +6,7 @@
 //
 //   POST /api/v1/asin-health/daily    { account_ids? }   (every company when left out)
 //     → { date, accounts: [{ account_id, alerts, content, errors? }] }
-//       alerts   [{ asin, rules: [{ rule_id (A1..A10), severity (high | medium) }],
+//       alerts   [{ asin, rules: [{ rule_id (A1..A10), name (the spec's), severity (high | medium) }],
 //                  alert_message, tags: [{ label, value, bad }], check_first }]
 //                one per ASIN with an alert, its rules most severe first and one
 //                message covering them all; the most severe ASIN first. Tags are the
@@ -89,10 +89,12 @@ export function getAsinHealthData(signal) {
   return postJson('/asin-health-data', { account_ids: [], date: today }, 'Could not load the data', signal);
 }
 
-/** `run` is 'daily' | 'weekly'. Takes a minute or more. */
-export async function runAsinHealth(run, signal) {
-  if (run === 'weekly') return postJson('/asin-health/weekly', {}, 'The weekly failed', signal);
-  return postJson('/asin-health/daily', {}, 'The daily check failed', signal);
+/** `run` is 'daily' | 'weekly'; `accountIds` the companies to run, every one when empty.
+ *  Takes a minute or more. (Until 2026-10-30 it always ran every company.) */
+export async function runAsinHealth(run, accountIds, signal) {
+  const body = accountIds?.length ? { account_ids: accountIds } : {};
+  if (run === 'weekly') return postJson('/asin-health/weekly', body, 'The weekly failed', signal);
+  return postJson('/asin-health/daily', body, 'The daily check failed', signal);
 }
 
 /** Open a chat thread on one company. */
