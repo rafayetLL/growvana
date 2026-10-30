@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import Sidebar from './Sidebar.jsx';
 import AsinHealthChat from './AsinHealthChat.jsx';
 import { IconCheck, IconClock, IconZap } from './icons.jsx';
@@ -44,7 +46,7 @@ const RUN_LABELS = { daily: 'Run daily check', weekly: 'Run weekly' };
 // left behind rather than read: daily `v5` is one alert per ASIN with each rule's spec
 // name (`v4` had no names) and weekly `v7` the week's ASINs with their days and summary
 // (`v6` was `act_on`) — both 2026-10-30.
-const STORAGE_VERSION = { daily: 'v5', weekly: 'v7' };
+const STORAGE_VERSION = { daily: 'v5', weekly: 'v8' };
 const STORAGE_KEY = (run) => `growvana.asinHealth.lastRun.${STORAGE_VERSION[run]}.${run}`;
 
 function readStored(run) {
@@ -639,19 +641,36 @@ function DailyDigest({ account }) {
 // ── tab 2: weekly ───────────────────────────────────────────────────────────────
 
 // The weekly since 2026-10-30: every ASIN the daily alerted on this week or over a weekly
-// threshold — its severity, the model's daily-check trend, the 7-day strip, the model's
-// summary and code's reasons. Quiet ASINs are not in the answer.
+// threshold — the model's trend over its whole week, its summary, and code's reasons (one
+// line per daily alert, then each threshold). Quiet ASINs are not in the answer. The
+// severity and the 7-day strip went the same day (the user's call).
 const TREND_STYLE = {
-  improving: { mark: '▲', text: 'Improving', cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' },
-  worsening: { mark: '▼', text: 'Worsening', cls: 'bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300' },
-  steady: { mark: '▬', text: 'Steady', cls: 'bg-ink-100 text-ink-600 dark:bg-slate-800 dark:text-slate-300' },
+  improving: {
+    mark: '▲',
+    text: 'Improving',
+    cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
+    edge: 'border-l-emerald-500 dark:border-l-emerald-500',
+  },
+  worsening: {
+    mark: '▼',
+    text: 'Worsening',
+    cls: 'bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300',
+    edge: 'border-l-rose-500 dark:border-l-rose-500',
+  },
+  steady: {
+    mark: '▬',
+    text: 'Steady',
+    cls: 'bg-ink-100 text-ink-600 dark:bg-slate-800 dark:text-slate-300',
+    edge: 'border-l-ink-300 dark:border-l-slate-600',
+  },
 };
 
-const DAY_SQUARE = {
-  high: 'bg-rose-500 dark:bg-rose-500',
-  medium: 'bg-amber-400 dark:bg-amber-400',
-  quiet: 'bg-ink-100 dark:bg-slate-800',
-};
+// The 7-day strip's colours, until 2026-10-30:
+// const DAY_SQUARE = {
+//   high: 'bg-rose-500 dark:bg-rose-500',
+//   medium: 'bg-amber-400 dark:bg-amber-400',
+//   quiet: 'bg-ink-100 dark:bg-slate-800',
+// };
 
 function TrendBadge({ trend }) {
   const t = TREND_STYLE[trend];
@@ -664,46 +683,51 @@ function TrendBadge({ trend }) {
   );
 }
 
-function WeekStrip7({ days }) {
-  return (
-    <div className="flex gap-1.5">
-      {days.map((d) => (
-        <div key={d.date} className="flex flex-col items-center gap-1">
-          <span
-            title={`${dayLabel(d.date, false)} · ${d.severity || 'no alert'}`}
-            className={`h-6 w-6 rounded-md ${DAY_SQUARE[d.severity || 'quiet']}`}
-          />
-          <span className="text-[10.5px] text-ink-400 dark:text-slate-500">
-            {new Date(`${d.date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'narrow' })}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
+// The week's 7 days as squares coloured by their worst alert, until 2026-10-30:
+// function WeekStrip7({ days }) {
+//   return (
+//     <div className="flex gap-1.5">
+//       {days.map((d) => (
+//         <div key={d.date} className="flex flex-col items-center gap-1">
+//           <span
+//             title={`${dayLabel(d.date, false)} · ${d.severity || 'no alert'}`}
+//             className={`h-6 w-6 rounded-md ${DAY_SQUARE[d.severity || 'quiet']}`}
+//           />
+//           <span className="text-[10.5px] text-ink-400 dark:text-slate-500">
+//             {new Date(`${d.date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'narrow' })}
+//           </span>
+//         </div>
+//       ))}
+//     </div>
+//   );
+// }
 
 function WeeklyAsinCard({ item }) {
   const { names } = useContext(Lookup);
-  const high = item.severity === 'high';
+  // The left edge followed the week's severity until 2026-10-30; it follows the trend now.
+  // const high = item.severity === 'high';
+  const edge = TREND_STYLE[item.daily_check_trend]?.edge || 'border-l-ink-300 dark:border-l-slate-600';
   return (
     <article
-      className={`rounded-xl border border-ink-200 dark:border-slate-800 border-l-4 bg-white dark:bg-slate-900 px-4 py-3 ${
-        high ? 'border-l-rose-500 dark:border-l-rose-500' : 'border-l-amber-500 dark:border-l-amber-500'
-      }`}
+      className={`rounded-xl border border-ink-200 dark:border-slate-800 border-l-4 bg-white dark:bg-slate-900 px-4 py-3 ${edge}`}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <SeverityChip severity={item.severity} />
+        {/* <SeverityChip severity={item.severity} /> */}
         <span className="font-mono text-[12px] text-ink-500 dark:text-slate-400">{item.asin}</span>
         <span className="text-[13.5px] font-medium text-ink-900 dark:text-slate-100">{names[item.asin]}</span>
         <span className="ml-auto">
           <TrendBadge trend={item.daily_check_trend} />
         </span>
       </div>
-      <div className="mt-3">
+      {/* <div className="mt-3">
         <WeekStrip7 days={item.days} />
-      </div>
+      </div> */}
+      {/* The summary is markdown since 2026-10-30 — headline, figures table, how the week
+          went, where it stands; it was 2–3 plain sentences in a <p>. */}
       {item.summary && (
-        <p className="mt-2.5 text-[13.5px] leading-relaxed text-ink-800 dark:text-slate-200">{item.summary}</p>
+        <div className="md mt-2.5 overflow-x-auto text-[13.5px]">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.summary}</ReactMarkdown>
+        </div>
       )}
       <ul className="mt-2.5 flex flex-wrap gap-1.5">
         {item.reasons.map((r) => (

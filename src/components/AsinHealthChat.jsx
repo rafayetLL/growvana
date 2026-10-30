@@ -92,8 +92,43 @@ function UserMessage({ message }) {
   );
 }
 
+// The chat column's width, dragged by the line on its right edge — the Meta Ad screen's
+// splitter (`useSplit` there, `.builder-splitter` in index.css).
+function useSplit(initial = 420, min = 320, max = 760) {
+  const [w, setW] = useState(initial);
+  const draggingRef = useRef(false);
+  const startRef = useRef({ x: 0, w: 0 });
+  const onDown = (e) => {
+    draggingRef.current = true;
+    startRef.current = { x: e.clientX, w };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!draggingRef.current) return;
+      const dx = e.clientX - startRef.current.x;
+      setW(Math.max(min, Math.min(max, startRef.current.w + dx)));
+    };
+    const onUp = () => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [min, max]);
+  return [w, onDown];
+}
+
 export default function AsinHealthChat({ companies, selected }) {
   const [open, setOpen] = useState(true);
+  const [width, onSplitDown] = useSplit();
   const [accountId, setAccountId] = useState(selected);
   const [threads, setThreads] = useState({}); // account_id → { threadId, messages }
   const [draft, setDraft] = useState('');
@@ -199,7 +234,10 @@ export default function AsinHealthChat({ companies, selected }) {
   }
 
   return (
-    <aside className="flex w-[420px] shrink-0 flex-col border-r border-ink-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+    <>
+    {/* A fixed 420px with a border on its right, until the splitter (2026-10-30): */}
+    {/* <aside className="flex w-[420px] shrink-0 flex-col border-r border-ink-200 bg-white dark:border-slate-800 dark:bg-slate-900"> */}
+    <aside style={{ width }} className="flex shrink-0 flex-col bg-white dark:bg-slate-900">
       <div className="flex items-center gap-2 border-b border-ink-200 px-5 py-3 dark:border-slate-800">
         <h2 className="text-[15px] font-semibold text-ink-900 dark:text-slate-100">Chat with ASIN Health Checker</h2>
         <button
@@ -299,5 +337,13 @@ export default function AsinHealthChat({ companies, selected }) {
         </button>
       </form>
     </aside>
+    <div
+      className="builder-splitter"
+      onMouseDown={onSplitDown}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize chat panel"
+    />
+    </>
   );
 }
