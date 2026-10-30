@@ -62,6 +62,9 @@ export const IconTarget = (p) => (
 export const IconChart = (p) => (
   <svg {...base} {...p}><path d="M3 20h18" /><path d="M6 20V11" /><path d="M11 20V6" /><path d="M16 20v-6" /><path d="M21 20V9" /></svg>
 );
+export const IconPulse = (p) => (
+  <svg {...base} {...p}><path d="M3 12h4l2.5-6 4 12 2.5-6H21" /></svg>
+);
 export const IconBook = (p) => (
   <svg {...base} {...p}><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v17H6.5A2.5 2.5 0 0 0 4 21.5v-17Z" /><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /></svg>
 );

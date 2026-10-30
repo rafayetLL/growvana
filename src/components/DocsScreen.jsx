@@ -3,12 +3,20 @@ import Sidebar from './Sidebar.jsx';
 import Logo from './Logo.jsx';
 import MetaAdAgentDoc, { META_AD_DOC_META } from './docs/MetaAdAgentDoc.jsx';
 import EmailAgentDoc, { EMAIL_DOC_META } from './docs/EmailAgentDoc.jsx';
+import FoundationAgentDoc, { FOUNDATION_DOC_META } from './docs/FoundationAgentDoc.jsx';
+import PdpAgentDoc, { PDP_DOC_META } from './docs/PdpAgentDoc.jsx';
+import GoogleAdAgentDoc, { GOOGLE_AD_DOC_META } from './docs/GoogleAdAgentDoc.jsx';
+import TikTokAdAgentDoc, { TIKTOK_AD_DOC_META } from './docs/TikTokAdAgentDoc.jsx';
+import ForecastAgentDoc, { FORECAST_DOC_META } from './docs/ForecastAgentDoc.jsx';
 import { downloadWordDoc } from './docs/wordExport.js';
 import {
   IconTarget,
   IconMail,
   IconCompass,
   IconChart,
+  IconDoc,
+  IconSearch,
+  IconVideo,
   IconDownload,
   IconArrowLeft,
   IconBook,
@@ -22,6 +30,16 @@ import {
 // import it, and give its row a `doc`. A row without one renders as a
 // not-written-yet card and cannot be opened.
 const DOCS = [
+  {
+    id: 'foundation_agent',
+    name: 'Foundation Agent',
+    blurb: 'How it reads your brand, the questions it asks once, and how the Company Blueprint every other agent reads gets written.',
+    icon: IconDoc,
+    tint: 'text-emerald-600 dark:text-emerald-400',
+    tintBg: 'bg-emerald-50 dark:bg-emerald-500/10',
+    doc: FoundationAgentDoc,
+    meta: FOUNDATION_DOC_META,
+  },
   {
     id: 'meta_ad_agent',
     name: 'Meta Ad Agent',
@@ -49,6 +67,28 @@ const DOCS = [
     icon: IconCompass,
     tint: 'text-violet-500 dark:text-violet-400',
     tintBg: 'bg-violet-50 dark:bg-violet-500/10',
+    doc: PdpAgentDoc,
+    meta: PDP_DOC_META,
+  },
+  {
+    id: 'google_ad_agent',
+    name: 'Google Ad Agent',
+    blurb: 'Diagnoses ads from Google’s public record, with search demand behind every keyword it recommends.',
+    icon: IconSearch,
+    tint: 'text-amber-600 dark:text-amber-400',
+    tintBg: 'bg-amber-50 dark:bg-amber-500/10',
+    doc: GoogleAdAgentDoc,
+    meta: GOOGLE_AD_DOC_META,
+  },
+  {
+    id: 'tiktok_ad_agent',
+    name: 'TikTok Ad Agent',
+    blurb: 'Finds a brand’s TikTok ads, watches them, and writes a diagnosis page for each.',
+    icon: IconVideo,
+    tint: 'text-teal-600 dark:text-teal-400',
+    tintBg: 'bg-teal-50 dark:bg-teal-500/10',
+    doc: TikTokAdAgentDoc,
+    meta: TIKTOK_AD_DOC_META,
   },
   {
     id: 'forecast_agent',
@@ -57,6 +97,8 @@ const DOCS = [
     icon: IconChart,
     tint: 'text-sky-500 dark:text-sky-400',
     tintBg: 'bg-sky-50 dark:bg-sky-500/10',
+    doc: ForecastAgentDoc,
+    meta: FORECAST_DOC_META,
   },
 ];
 

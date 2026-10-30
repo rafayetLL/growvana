@@ -13,6 +13,7 @@ import {
   IconSparkle,
   IconCompass,
   IconChart,
+  IconPulse,
 } from './icons.jsx';
 
 const AGENTS = [
@@ -62,6 +63,18 @@ const AGENTS = [
     status: 'active',
     statKey: 'Forecast Horizon',
     statValue: '12 mo',
+    enabled: true,
+  },
+  {
+    id: 'asin_health',
+    name: 'ASIN Health Checker',
+    description: 'Daily and weekly checks on every Amazon listing — buy box, Prime, listing problems, stock and content',
+    icon: IconPulse,
+    iconBg: 'bg-rose-50 dark:bg-rose-500/10',
+    iconColor: 'text-rose-500 dark:text-rose-400',
+    status: 'active',
+    statKey: 'Runs',
+    statValue: 'Daily + Weekly',
     enabled: true,
   },
   {

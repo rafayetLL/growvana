@@ -7,6 +7,7 @@ import {
   IconChart,
   IconBook,
   IconSettings,
+  IconPulse,
 } from './icons.jsx';
 
 // First screen the user sees. Picks which agent to work in:
@@ -20,6 +21,8 @@ import {
 //   'pdp'        → the PDP Agent (one product per thread).
 //   'forecast'   → the Forecast Agent (one continuous forecasting chat per thread;
 //                  files attach by URL; no Foundation session is read in v1).
+//   'asin_health'→ the ASIN Health dashboard (daily and weekly checks over every
+//                  company; no thread, no brand context).
 //
 // The four consuming agents each take brand context the SAME way — an existing
 // Foundation thread, an uploaded Blueprint PDF, or none — which is what the
@@ -53,7 +56,7 @@ export default function CampaignChooser({ onSelect, onOpenDocs }) {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             {/* FIRST, because it is what the other four read. It used to be reachable
                 only through Email Campaign → "Generate Blueprint in Foundation",
                 which hid the shared step behind one of its consumers. */}
@@ -149,6 +152,25 @@ export default function CampaignChooser({ onSelect, onOpenDocs }) {
               </p>
               <div className="mt-5 inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-sky-600 text-white text-[13px] font-medium group-hover:bg-sky-700 transition">
                 Start a Forecast →
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onSelect?.('asin_health')}
+              className="group text-left bg-white dark:bg-slate-900 border border-ink-200 dark:border-slate-800 rounded-2xl p-6 hover:border-rose-400 dark:hover:border-rose-500/60 hover:shadow-md transition"
+            >
+              <div className="h-11 w-11 rounded-xl bg-rose-50 dark:bg-rose-500/15 text-rose-600 dark:text-rose-300 grid place-items-center">
+                <IconPulse width={20} height={20} />
+              </div>
+              <h2 className="mt-4 text-[18px] font-semibold text-ink-900 dark:text-slate-100">
+                ASIN Health
+              </h2>
+              <p className="mt-1.5 text-[13px] text-ink-500 dark:text-slate-400 leading-relaxed">
+                Check every Amazon listing we manage. Daily: buy box, Prime, listing problems, low stock and weak content. Weekly: what moved last week and why.
+              </p>
+              <div className="mt-5 inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-rose-600 text-white text-[13px] font-medium group-hover:bg-rose-700 transition">
+                Open the Dashboard →
               </div>
             </button>
           </div>

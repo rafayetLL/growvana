@@ -8,6 +8,7 @@ import EmailAgentBuilderScreen from './components/EmailAgentBuilderScreen.jsx';
 import MetaAdAgentBuilderScreen from './components/MetaAdAgentBuilderScreen.jsx';
 import PdpAgentScreen from './components/PdpAgentScreen.jsx';
 import ForecastAgentScreen from './components/ForecastAgentScreen.jsx';
+import AsinHealthScreen from './components/AsinHealthScreen.jsx';
 import DocsScreen from './components/DocsScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import { initChat } from './lib/api.js';
@@ -30,6 +31,7 @@ function viewFromSidebar(slug) {
   if (slug === 'meta_ad_agent') return 'meta_ad_agent';
   if (slug === 'pdp_agent') return 'pdp_agent';
   if (slug === 'forecast_agent') return 'forecast_agent';
+  if (slug === 'asin_health') return 'asin_health';
   if (slug === 'execution') return 'agents';
   return 'foundations';
 }
@@ -40,6 +42,7 @@ function sidebarFromView(view) {
   if (view === 'meta_ad_agent') return 'meta_ad_agent';
   if (view === 'pdp_agent') return 'pdp_agent';
   if (view === 'forecast_agent') return 'forecast_agent';
+  if (view === 'asin_health') return 'asin_health';
   return 'execution';
 }
 
@@ -71,7 +74,7 @@ export default function App() {
 // Only a flow that actually has a thread behind it is restored. `onboarding` is
 // deliberately not: nothing has been created at that point, so reopening it would
 // re-show a half-filled form with no thread under it.
-const RESTORABLE_STAGES = new Set(['chat', 'meta_ad', 'pdp', 'forecast']);
+const RESTORABLE_STAGES = new Set(['chat', 'meta_ad', 'pdp', 'forecast', 'asin_health']);
 
 function restoredSession() {
   const saved = recallSession();
@@ -238,6 +241,13 @@ function AppInner() {
       setStage('forecast');
       return;
     }
+    if (type === 'asin_health') {
+      // No thread at all: the dashboard reads the backend's companies and runs
+      // the daily or weekly check on demand.
+      setCampaign('asin_health');
+      setStage('asin_health');
+      return;
+    }
     setCampaign('email'); // stays on the 'landing' stage → EmailLanding
   }
 
@@ -371,6 +381,7 @@ function AppInner() {
                 if (id === 'meta_ad_agent') setView('meta_ad_agent');
                 if (id === 'pdp_agent') setView('pdp_agent');
                 if (id === 'forecast_agent') setView('forecast_agent');
+                if (id === 'asin_health') setView('asin_health');
               }}
             />
           </div>
@@ -435,6 +446,14 @@ function AppInner() {
             activeView="forecast_agent"
             onSelectView={handleSidebar}
             foundationThreadId={initResult.thread_id}
+            projectName={projectName}
+            onNewProject={handleNewProject}
+          />
+        </div>
+        <div className={view === 'asin_health' ? 'h-screen' : 'hidden'}>
+          <AsinHealthScreen
+            activeView="asin_health"
+            onSelectView={handleSidebar}
             projectName={projectName}
             onNewProject={handleNewProject}
           />
@@ -508,6 +527,24 @@ function AppInner() {
     );
   }
 
+  // Standalone ASIN Health dashboard — picked from the chooser, no session behind it.
+  if (stage === 'asin_health') {
+    return (
+      <AsinHealthScreen
+        activeView="asin_health"
+        onSelectView={(slug) => {
+          // No shared project session here; any other nav target starts a fresh
+          // campaign from the chooser instead. Documentation opens over this flow.
+          if (slug === 'documentation') { setShowDocs(true); return; }
+          if (slug !== 'asin_health') handleNewProject();
+        }}
+        hideFoundation
+        projectName="ASIN Health"
+        onNewProject={handleNewProject}
+      />
+    );
+  }
+
   if (stage === 'onboarding') {
     return (
       <Onboarding
@@ -552,6 +589,7 @@ function AppInner() {
     (stage === 'meta_ad' && 'Meta Ad Campaign') ||
     (stage === 'pdp' && 'Product Page Audit') ||
     (stage === 'forecast' && 'Sales Forecast') ||
+    (stage === 'asin_health' && 'ASIN Health') ||
     'Untitled project';
   const docsHideFoundation = stage !== 'chat' || pdfFlow;
   // Before a project exists there is no agent nav to show, so the docs stand on

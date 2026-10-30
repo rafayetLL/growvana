@@ -14,6 +14,7 @@ import {
   IconCompass,
   IconChart,
   IconBook,
+  IconPulse,
 } from './icons.jsx';
 import ThreadHistory from './ThreadHistory.jsx';
 import { useTheme } from '../lib/theme.js';
@@ -54,6 +55,14 @@ const AGENT_ITEMS = [
     label: 'Forecast Agent',
     sub: 'Forecast Workbench',
     icon: <IconChart />,
+    historyAgent: null,
+  },
+  {
+    view: 'asin_health',
+    label: 'ASIN Health',
+    sub: 'Daily & Weekly Checks',
+    icon: <IconPulse />,
+    // No threads: a run is one request and nothing is kept server-side.
     historyAgent: null,
   },
 ];
